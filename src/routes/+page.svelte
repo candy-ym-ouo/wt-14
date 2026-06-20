@@ -117,12 +117,16 @@
     if (game.mode === 'campaign') {
       const battleStats = gameStore.getBattleStats();
       const deployedUnits = $campaignStore.battle.deployedUnits;
+      const synergies = $campaignStore.battle.activeSynergies || [];
+      const classCounts = $campaignStore.battle.classCounts || {};
       $campaignStore.recordBattleData(battleStats);
       $campaignStore.completeBattle({
         winner,
         turns: game.turn,
         redUnits,
-        blueUnits
+        blueUnits,
+        synergies: synergies.map(s => s.name),
+        classCounts
       });
     } else {
       saveGameRecord({

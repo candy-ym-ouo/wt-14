@@ -15,7 +15,9 @@ export function saveGameRecord(result) {
       redUnitsRemaining: result.redUnits,
       blueUnitsRemaining: result.blueUnits,
       levelId: result.levelId || null,
-      chapterId: result.chapterId || null
+      chapterId: result.chapterId || null,
+      synergies: result.synergies || [],
+      classCounts: result.classCounts || {}
     };
     records.unshift(record);
     const trimmed = records.slice(0, 100);
@@ -49,6 +51,7 @@ export function clearGameRecords() {
 
 export function getStats() {
   const records = loadGameRecords();
+  const campaign = loadCampaignProgress();
   const stats = {
     totalGames: records.length,
     redWins: 0,
@@ -56,7 +59,15 @@ export function getStats() {
     draws: 0,
     avgTurns: 0,
     campaignWins: 0,
-    campaignLosses: 0
+    campaignLosses: 0,
+    gold: campaign.gold || 0,
+    recruitStats: campaign.recruitStats || {
+      totalRecruited: 0,
+      totalSpent: 0,
+      totalRefreshed: 0,
+      byRarity: { common: 0, uncommon: 0, rare: 0, epic: 0, legendary: 0 },
+      byClass: { scout: 0, infantry: 0, archer: 0, knight: 0, mage: 0 }
+    }
   };
 
   if (records.length === 0) return stats;
@@ -115,13 +126,20 @@ function createDefaultCampaignProgress() {
     completedLevels: [],
     unlockedChapters: ['chapter_1'],
     unlockedUnits: ['scout', 'infantry', 'archer'],
-    gold: 0,
+    gold: 100,
     totalExp: 0,
     playTime: 0,
     battleCount: 0,
     victories: 0,
     defeats: 0,
-    lastSaved: null
+    lastSaved: null,
+    recruitStats: {
+      totalRecruited: 0,
+      totalSpent: 0,
+      totalRefreshed: 0,
+      byRarity: { common: 0, uncommon: 0, rare: 0, epic: 0, legendary: 0 },
+      byClass: { scout: 0, infantry: 0, archer: 0, knight: 0, mage: 0 }
+    }
   };
 }
 

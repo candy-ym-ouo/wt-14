@@ -1,15 +1,47 @@
 import { writable, derived, get } from 'svelte/store';
 import { CHAPTERS, getLevelById, getChapterById, getAllLevels, CHARACTERS } from '$lib/config/chapters.js';
-import { UNIT_TYPES } from '$lib/config/units.js';
+import { UNIT_TYPES, UNIT_CLASSES } from '$lib/config/units.js';
 import {
   calculateStatGrowth, applyExp, applyRarityBonus, generateRarity,
   getExpRequired, getExpToNextLevel, MAX_LEVEL, UNIT_RARITY
 } from '$lib/config/unitGrowth.js';
+import { RECRUIT_RULES } from '$lib/config/gameRules.js';
+import { calculateClassSynergy } from '$lib/utils/gameLogic.js';
 import {
   loadCampaignProgress, saveCampaignProgress,
   loadUnitPool, saveUnitPool, addUnitToPool, updateUnitInPool,
   isLevelUnlocked, unlockAchievement, saveGameRecord, loadSettings
 } from '$lib/utils/storage.js';
+
+function generateShopOffer(unlockedUnits) {
+  const offers = [];
+  for (let i = 0; i < RECRUIT_RULES.shopSize; i++) {
+    const type = unlockedUnits[Math.floor(Math.random() * unlockedUnits.length)];
+    const rarity = generateRarity();
+    const baseStats = calculateStatGrowth(type, 1);
+    const rarityMultiplier = RECRUIT_RULES.rarityCostMultiplier[rarity] || 1.0;
+    const baseCost = UNIT_TYPES[type]?.recruitCost || 50;
+    const cost = Math.floor(baseCost * rarityMultiplier);
+
+    let unit = {
+      type,
+      rarity,
+      level: 1,
+      exp: 0,
+      ...baseStats,
+      maxHp: baseStats.hp
+    };
+    unit = applyRarityBonus(unit, rarity);
+
+    offers.push({
+      offerId: `offer_${Date.now()}_${i}`,
+      ...unit,
+      name: `${UNIT_TYPES[type].name}·新兵`,
+      cost
+    });
+  }
+  return offers;
+}
 
 function createInitialCampaignState() {
   const progress = loadCampaignProgress();
@@ -36,11 +68,17 @@ function createInitialCampaignState() {
       battleStartUnits: [],
       killedEnemies: [],
       damageDealt: [],
-      objectivesCompleted: []
+      objectivesCompleted: [],
+      synergyEffects: null,
+      activeSynergies: []
     },
     rewards: {
       active: false,
       data: null
+    },
+    shop: {
+      offers: generateShopOffer(progress.unlockedUnits),
+      refreshedThisSession: 0
     },
     progress,
     unitPool,
@@ -246,6 +284,20 @@ function createCampaignStore() {
       const levelData = getLevelById(state.selectedLevelId);
       if (!levelData) return state;
 
+      const synergy = calculateClassSynergy(selectedUnits);
+
+      const buffedUnits = selectedUnits.map(unit => {
+        if (unit.player !== 'red') return unit;
+        return {
+          ...unit,
+          attack: unit.attack + (synergy.effects.attack || 0),
+          defense: unit.defense + (synergy.effects.defense || 0),
+          maxHp: unit.maxHp + (synergy.effects.maxHp || 0),
+          hp: Math.min(unit.hp + (synergy.effects.maxHp || 0), unit.maxHp + (synergy.effects.maxHp || 0)),
+          moveRange: unit.moveRange + (synergy.effects.moveRange || 0)
+        };
+      });
+
       return {
         ...state,
         view: 'battle',
@@ -253,11 +305,14 @@ function createCampaignStore() {
           active: true,
           levelId: state.selectedLevelId,
           chapterId: levelData.chapterId,
-          deployedUnits: selectedUnits,
-          battleStartUnits: JSON.parse(JSON.stringify(selectedUnits)),
+          deployedUnits: buffedUnits,
+          battleStartUnits: JSON.parse(JSON.stringify(buffedUnits)),
           killedEnemies: [],
           damageDealt: [],
-          objectivesCompleted: []
+          objectivesCompleted: [],
+          synergyEffects: synergy.effects,
+          activeSynergies: synergy.synergies,
+          classCounts: synergy.classCounts
         }
       };
     }),
@@ -480,6 +535,11 @@ function createCampaignStore() {
         return state;
       }
 
+      if (state.unitPool.units.length >= RECRUIT_RULES.maxRosterSize) {
+        showNotification(`阵容已满（上限${RECRUIT_RULES.maxRosterSize}），请先解散一些单位`, 'warning');
+        return state;
+      }
+
       const baseStats = calculateStatGrowth(unitType, 1);
       const rarity = options.rarity || generateRarity();
       let newUnit = {
@@ -504,6 +564,138 @@ function createCampaignStore() {
 
       return { ...state, unitPool: newPool };
     }),
+
+    refreshShop: () => update(state => {
+      if (state.progress.gold < RECRUIT_RULES.refreshCost) {
+        showNotification(`金币不足，刷新需要 ${RECRUIT_RULES.refreshCost} 金币`, 'warning');
+        return state;
+      }
+
+      const newProgress = { ...state.progress };
+      newProgress.gold -= RECRUIT_RULES.refreshCost;
+      newProgress.recruitStats = {
+        ...newProgress.recruitStats,
+        totalRefreshed: (newProgress.recruitStats?.totalRefreshed || 0) + 1,
+        totalSpent: (newProgress.recruitStats?.totalSpent || 0) + RECRUIT_RULES.refreshCost
+      };
+
+      const newState = {
+        ...state,
+        progress: newProgress,
+        shop: {
+          offers: generateShopOffer(newProgress.unlockedUnits),
+          refreshedThisSession: state.shop.refreshedThisSession + 1
+        }
+      };
+
+      autoSave(newState);
+      showNotification(`商店已刷新（消耗 ${RECRUIT_RULES.refreshCost} 金币）`, 'info');
+      return newState;
+    }),
+
+    recruitUnit: (offerId) => update(state => {
+      const offer = state.shop.offers.find(o => o.offerId === offerId);
+      if (!offer) {
+        showNotification('该招募已失效', 'warning');
+        return state;
+      }
+
+      if (state.progress.gold < offer.cost) {
+        showNotification(`金币不足，需要 ${offer.cost} 金币`, 'warning');
+        return state;
+      }
+
+      if (state.unitPool.units.length >= RECRUIT_RULES.maxRosterSize) {
+        showNotification(`阵容已满（上限${RECRUIT_RULES.maxRosterSize}），请先解散一些单位`, 'warning');
+        return state;
+      }
+
+      const newUnit = {
+        uid: `pool_${state.unitPool.nextUnitId++}`,
+        type: offer.type,
+        name: offer.name,
+        level: offer.level,
+        exp: offer.exp,
+        rarity: offer.rarity,
+        maxHp: offer.maxHp,
+        hp: offer.maxHp,
+        attack: offer.attack,
+        defense: offer.defense,
+        moveRange: offer.moveRange,
+        attackRange: offer.attackRange
+      };
+
+      const newPool = {
+        ...state.unitPool,
+        units: [...state.unitPool.units, newUnit]
+      };
+
+      const newProgress = { ...state.progress };
+      newProgress.gold -= offer.cost;
+      newProgress.recruitStats = {
+        ...newProgress.recruitStats,
+        totalRecruited: (newProgress.recruitStats?.totalRecruited || 0) + 1,
+        totalSpent: (newProgress.recruitStats?.totalSpent || 0) + offer.cost,
+        byRarity: {
+          ...newProgress.recruitStats?.byRarity,
+          [offer.rarity]: (newProgress.recruitStats?.byRarity?.[offer.rarity] || 0) + 1
+        },
+        byClass: {
+          ...newProgress.recruitStats?.byClass,
+          [UNIT_TYPES[offer.type].unitClass]: (newProgress.recruitStats?.byClass?.[UNIT_TYPES[offer.type].unitClass] || 0) + 1
+        }
+      };
+
+      const newOffers = state.shop.offers.filter(o => o.offerId !== offerId);
+
+      const newState = {
+        ...state,
+        progress: newProgress,
+        unitPool: newPool,
+        shop: { ...state.shop, offers: newOffers }
+      };
+
+      autoSave(newState);
+      showNotification(`招募成功：${newUnit.name}（${UNIT_RARITY[offer.rarity].name}）`, 'success');
+
+      if (offer.rarity === 'legendary') unlockAchievement('legendary_unit');
+
+      return newState;
+    }),
+
+    dismissUnit: (uid) => update(state => {
+      const unit = state.unitPool.units.find(u => u.uid === uid);
+      if (!unit) {
+        showNotification('单位不存在', 'warning');
+        return state;
+      }
+
+      const baseCost = UNIT_TYPES[unit.type]?.recruitCost || 30;
+      const refund = Math.floor(baseCost * 0.3 * (unit.level || 1));
+
+      const newPool = {
+        ...state.unitPool,
+        units: state.unitPool.units.filter(u => u.uid !== uid)
+      };
+
+      const newProgress = { ...state.progress };
+      newProgress.gold += refund;
+
+      const newState = {
+        ...state,
+        progress: newProgress,
+        unitPool: newPool
+      };
+
+      autoSave(newState);
+      showNotification(`已解散 ${unit.name}，返还 ${refund} 金币`, 'info');
+      return newState;
+    }),
+
+    getRosterSynergy: () => {
+      const state = get(campaignStore);
+      return calculateClassSynergy(state.unitPool.units);
+    },
 
     dismissReward: () => update(state => ({
       ...state,
@@ -585,4 +777,12 @@ export const levelStatusMap = derived(campaignStore, $campaign => {
     map[level.id] = { completed, unlocked };
   });
   return map;
+});
+
+export const rosterSynergy = derived(campaignStore, $campaign => {
+  return calculateClassSynergy($campaign.unitPool.units);
+});
+
+export const shopOffers = derived(campaignStore, $campaign => {
+  return $campaign.shop.offers;
 });

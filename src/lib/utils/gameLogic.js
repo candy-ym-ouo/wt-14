@@ -1,6 +1,57 @@
 import { BOARD_CONFIG, TERRAIN_MAP } from '$lib/config/board.js';
-import { COMBAT_FORMULA, GAME_RULES } from '$lib/config/gameRules.js';
+import { COMBAT_FORMULA, GAME_RULES, CLASS_SYNERGY } from '$lib/config/gameRules.js';
+import { UNIT_TYPES } from '$lib/config/units.js';
 import { getTerrainAt, getEffectiveMoveRange, getEffectiveAttack, getEffectiveDefense } from '$lib/stores/gameStore.js';
+
+export function calculateClassSynergy(units) {
+  const classCounts = {};
+  units.forEach(u => {
+    if (u.player !== 'red') return;
+    const unitType = UNIT_TYPES[u.type];
+    if (!unitType) return;
+    const cls = unitType.unitClass;
+    classCounts[cls] = (classCounts[cls] || 0) + 1;
+  });
+
+  const uniqueClasses = Object.keys(classCounts).length;
+  const totalEffect = { attack: 0, defense: 0, maxHp: 0, moveRange: 0 };
+  const activeSynergies = [];
+
+  Object.values(CLASS_SYNERGY).forEach(synergy => {
+    let active = false;
+
+    if (synergy.uniqueClasses !== undefined) {
+      if (uniqueClasses >= synergy.uniqueClasses) {
+        active = true;
+      }
+    } else if (synergy.classes) {
+      active = Object.entries(synergy.classes).every(
+        ([cls, count]) => (classCounts[cls] || 0) >= count
+      );
+    }
+
+    if (active) {
+      activeSynergies.push(synergy);
+      Object.entries(synergy.effect).forEach(([stat, value]) => {
+        totalEffect[stat] = (totalEffect[stat] || 0) + value;
+      });
+    }
+  });
+
+  return { effects: totalEffect, synergies: activeSynergies, classCounts };
+}
+
+export function applySynergyToUnit(unit, synergyEffects) {
+  if (!synergyEffects) return unit;
+  return {
+    ...unit,
+    attack: unit.attack + (synergyEffects.attack || 0),
+    defense: unit.defense + (synergyEffects.defense || 0),
+    maxHp: unit.maxHp + (synergyEffects.maxHp || 0),
+    hp: Math.min(unit.hp + (synergyEffects.maxHp || 0), unit.maxHp + (synergyEffects.maxHp || 0)),
+    moveRange: unit.moveRange + (synergyEffects.moveRange || 0)
+  };
+}
 
 export function getValidMoveTiles(unit, units, movementLimit) {
   const maxRange = getEffectiveMoveRange(unit, movementLimit);

@@ -13,8 +13,7 @@
     getValidMoveTiles, 
     getValidAttackTiles, 
     calculateCombat, 
-    checkWinConditions,
-    updateBaseCaptureProgress
+    checkEliminationOnly
   } from '$lib/utils/gameLogic.js';
   import { saveGameRecord } from '$lib/utils/storage.js';
 
@@ -329,10 +328,7 @@
 
   function checkEndConditions() {
     const game = get(gameStore);
-    const captureProgress = updateBaseCaptureProgress(game.units, game.baseCaptureProgress);
-    gameStore.updateBaseCapture(captureProgress);
-    
-    const winner = checkWinConditions(game.units, game.turn, captureProgress);
+    const winner = checkEliminationOnly(game.units);
     if (winner) {
       gameStore.setWinner(winner);
       const redUnits = game.units.filter(u => u.player === 'red').length;
@@ -344,7 +340,7 @@
         blueUnits
       });
       const winnerName = winner === 'red' ? '红方' : winner === 'blue' ? '蓝方' : '平局';
-      onCombatLog?.(`游戏结束！${winnerName} 获胜！`);
+      onCombatLog?.(`🏆 战斗结束！${winnerName} 全歼敌军，获得胜利！`);
     }
   }
 

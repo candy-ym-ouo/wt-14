@@ -128,7 +128,7 @@ export function checkWinConditions(units, turn, baseCaptureProgress) {
   if (blueUnits.length === 0) return 'red';
 
   if (baseCaptureProgress?.red?.base_blue >= 2) return 'red';
-  if (baseCaptureProgress?.blue?.base_red >= 2) return 'red';
+  if (baseCaptureProgress?.blue?.base_red >= 2) return 'blue';
 
   if (turn > GAME_RULES.maxTurns) {
     if (redUnits.length > blueUnits.length) return 'red';
@@ -136,6 +136,14 @@ export function checkWinConditions(units, turn, baseCaptureProgress) {
     return 'draw';
   }
 
+  return null;
+}
+
+export function checkEliminationOnly(units) {
+  const redUnits = units.filter(u => u.player === 'red');
+  const blueUnits = units.filter(u => u.player === 'blue');
+  if (redUnits.length === 0) return 'blue';
+  if (blueUnits.length === 0) return 'red';
   return null;
 }
 

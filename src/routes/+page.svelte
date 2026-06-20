@@ -10,6 +10,7 @@
   import { gameStore } from '$lib/stores/gameStore.js';
   import { checkWinConditions, updateBaseCaptureProgress } from '$lib/utils/gameLogic.js';
   import { saveGameRecord } from '$lib/utils/storage.js';
+  import { GAME_RULES } from '$lib/config/gameRules.js';
 
   let combatLogs = [];
   let showRecords = false;
@@ -24,32 +25,47 @@
   function handleEndTurn() {
     const game = get(gameStore);
     if (game.gameOver) return;
-    
-    addLog(`--- ${game.currentPlayer === 'red' ? '红方' : '蓝方'} 回合结束 ---`);
-    
+
+    const endingPlayer = game.currentPlayer;
+    addLog(`--- ${endingPlayer === 'red' ? '红方' : '蓝方'} 回合结束 ---`);
+
+    const captureProgress = updateBaseCaptureProgress(game.units, game.baseCaptureProgress);
+    gameStore.updateBaseCapture(captureProgress);
+
+    if (captureProgress.red.base_blue > 0) {
+      addLog(`红方占领蓝方基地进度: ${captureProgress.red.base_blue}/2`);
+    }
+    if (captureProgress.blue.base_red > 0) {
+      addLog(`蓝方占领红方基地进度: ${captureProgress.blue.base_red}/2`);
+    }
+
+    const winner = checkWinConditions(game.units, game.turn, captureProgress);
+    if (winner) {
+      gameStore.setWinner(winner);
+      const redUnits = game.units.filter(u => u.player === 'red').length;
+      const blueUnits = game.units.filter(u => u.player === 'blue').length;
+      saveGameRecord({
+        winner,
+        turns: game.turn,
+        redUnits,
+        blueUnits
+      });
+      let reason = '';
+      if (captureProgress.red.base_blue >= 2 || captureProgress.blue.base_red >= 2) {
+        reason = '，占领基地获胜';
+      } else if (game.turn > GAME_RULES.maxTurns) {
+        reason = '，回合耗尽，单位数较多方获胜';
+      }
+      const winnerName = winner === 'red' ? '红方' : winner === 'blue' ? '蓝方' : '平局';
+      addLog(`🏆 游戏结束！${winnerName}${reason}！`);
+      return;
+    }
+
     gameStore.endTurn();
-    
+
     setTimeout(() => {
       const newGame = get(gameStore);
       addLog(`=== 第 ${newGame.turn} 回合 - ${newGame.currentPlayer === 'red' ? '红方' : '蓝方'} 行动 ===`);
-      
-      const captureProgress = updateBaseCaptureProgress(newGame.units, newGame.baseCaptureProgress);
-      gameStore.updateBaseCapture(captureProgress);
-      
-      const winner = checkWinConditions(newGame.units, newGame.turn, captureProgress);
-      if (winner) {
-        gameStore.setWinner(winner);
-        const redUnits = newGame.units.filter(u => u.player === 'red').length;
-        const blueUnits = newGame.units.filter(u => u.player === 'blue').length;
-        saveGameRecord({
-          winner,
-          turns: newGame.turn,
-          redUnits,
-          blueUnits
-        });
-        const winnerName = winner === 'red' ? '红方' : winner === 'blue' ? '蓝方' : '平局';
-        addLog(`🏆 游戏结束！${winnerName} 获胜！`);
-      }
     }, 100);
   }
 

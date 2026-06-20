@@ -1,13 +1,15 @@
 <script>
   import { campaignStore, availableUnits, currentLevel, rosterSynergy, shopOffers } from '$lib/stores/campaignStore.js';
   import { UNIT_TYPES, UNIT_CLASSES } from '$lib/config/units.js';
-  import { UNIT_RARITY, getExpRequired, MAX_LEVEL, calculateStatGrowth } from '$lib/config/unitGrowth.js';
+  import { UNIT_RARITY, getExpRequired, MAX_LEVEL, calculateStatGrowth, canPromote } from '$lib/config/unitGrowth.js';
   import { RECRUIT_RULES, CLASS_SYNERGY } from '$lib/config/gameRules.js';
   import { getLevelById } from '$lib/config/chapters.js';
+  import UnitGrowthPanel from './UnitGrowthPanel.svelte';
 
   export let mode = 'manage';
 
   let activeTab = 'roster';
+  let selectedGrowthUnit = null;
 
   $: level = $currentLevel;
   $: units = $availableUnits;
@@ -104,6 +106,14 @@
     if (confirm('确定要解散这个单位吗？将返还部分金币。')) {
       campaignStore.dismissUnit(uid);
     }
+  }
+
+  function openGrowthPanel(unit) {
+    selectedGrowthUnit = unit;
+  }
+
+  function closeGrowthPanel() {
+    selectedGrowthUnit = null;
   }
 
   function formatColor(num) {
@@ -387,7 +397,13 @@
               <span class="rarity-tag" style="background: {rarity.color}22; color: {rarity.color}">
                 {rarity.name}
               </span>
-              <span class="bonus-tag">属性 x{rarity.bonus.toFixed(2)}</span>
+              {#if mode === 'manage'}
+                <button class="growth-btn" on:click|stopPropagation={() => openGrowthPanel(unit)} title="查看成长详情">
+                  📊 成长
+                </button>
+              {:else}
+                <span class="bonus-tag">属性 x{rarity.bonus.toFixed(2)}</span>
+              {/if}
             </div>
           </div>
         {/each}
@@ -395,6 +411,10 @@
     {/if}
   {/if}
 </div>
+
+{#if selectedGrowthUnit}
+  <UnitGrowthPanel unit={selectedGrowthUnit} onClose={closeGrowthPanel} />
+{/if}
 
 <style>
   .unit-panel {
@@ -1055,5 +1075,22 @@
     .all-synergies {
       grid-template-columns: 1fr;
     }
+  }
+
+  .growth-btn {
+    padding: 4px 12px;
+    background: linear-gradient(135deg, #3a5a7a, #2a4a6a);
+    border: 1px solid rgba(100, 150, 255, 0.4);
+    border-radius: 6px;
+    color: #aaccff;
+    font-size: 11px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+
+  .growth-btn:hover {
+    background: linear-gradient(135deg, #4a6a8a, #3a5a7a);
+    transform: translateY(-1px);
   }
 </style>

@@ -3,7 +3,10 @@ import { CHAPTERS, getLevelById, getChapterById, getAllLevels, CHARACTERS } from
 import { UNIT_TYPES, UNIT_CLASSES } from '$lib/config/units.js';
 import {
   calculateStatGrowth, applyExp, applyRarityBonus, generateRarity,
-  getExpRequired, getExpToNextLevel, MAX_LEVEL, UNIT_RARITY
+  getExpRequired, getExpToNextLevel, MAX_LEVEL, UNIT_RARITY,
+  allocateStatPoint, getAvailableStatPoints, getAllocatedStats,
+  canPromote, getPromotionOptions, applyPromotion, previewGrowth,
+  STAT_POINTS_PER_LEVEL, PROMOTION_LEVEL, ALLOCATABLE_STATS
 } from '$lib/config/unitGrowth.js';
 import { RECRUIT_RULES } from '$lib/config/gameRules.js';
 import { calculateClassSynergy } from '$lib/utils/gameLogic.js';
@@ -28,6 +31,8 @@ function generateShopOffer(unlockedUnits) {
       rarity,
       level: 1,
       exp: 0,
+      statPoints: 0,
+      allocatedStats: { hp: 0, attack: 0, defense: 0 },
       ...baseStats,
       maxHp: baseStats.hp
     };
@@ -553,6 +558,8 @@ function createCampaignStore() {
         name: options.name || `${UNIT_TYPES[unitType].name}·新兵`,
         level: 1,
         exp: 0,
+        statPoints: 0,
+        allocatedStats: { hp: 0, attack: 0, defense: 0 },
         rarity,
         ...baseStats,
         maxHp: baseStats.hp
@@ -622,6 +629,8 @@ function createCampaignStore() {
         name: offer.name,
         level: offer.level,
         exp: offer.exp,
+        statPoints: offer.statPoints || 0,
+        allocatedStats: offer.allocatedStats || { hp: 0, attack: 0, defense: 0 },
         rarity: offer.rarity,
         maxHp: offer.maxHp,
         hp: offer.maxHp,
@@ -697,6 +706,76 @@ function createCampaignStore() {
       showNotification(`已解散 ${unit.name}，返还 ${refund} 金币`, 'info');
       return newState;
     }),
+
+    allocateStat: (uid, statId) => update(state => {
+      const unitIndex = state.unitPool.units.findIndex(u => u.uid === uid);
+      if (unitIndex === -1) {
+        showNotification('单位不存在', 'warning');
+        return state;
+      }
+
+      const unit = state.unitPool.units[unitIndex];
+      const available = getAvailableStatPoints(unit);
+      if (available <= 0) {
+        showNotification('没有可用的属性点', 'warning');
+        return state;
+      }
+
+      const newUnit = allocateStatPoint(unit, statId);
+      const newUnits = [...state.unitPool.units];
+      newUnits[unitIndex] = newUnit;
+
+      const newState = {
+        ...state,
+        unitPool: { ...state.unitPool, units: newUnits }
+      };
+
+      autoSave(newState);
+      const statInfo = ALLOCATABLE_STATS.find(s => s.id === statId);
+      showNotification(`已分配 1 点${statInfo?.name || statId}`, 'success');
+      return newState;
+    }),
+
+    promoteUnit: (uid, promotionId) => update(state => {
+      const unitIndex = state.unitPool.units.findIndex(u => u.uid === uid);
+      if (unitIndex === -1) {
+        showNotification('单位不存在', 'warning');
+        return state;
+      }
+
+      const unit = state.unitPool.units[unitIndex];
+      if (!canPromote(unit)) {
+        showNotification('该单位无法转职', 'warning');
+        return state;
+      }
+
+      const options = getPromotionOptions(unit.type, unit.level);
+      const promo = options.find(p => p.id === promotionId);
+      if (!promo) {
+        showNotification('无效的转职选项', 'warning');
+        return state;
+      }
+
+      const newUnit = applyPromotion(unit, promotionId);
+      const newUnits = [...state.unitPool.units];
+      newUnits[unitIndex] = newUnit;
+
+      const newState = {
+        ...state,
+        unitPool: { ...state.unitPool, units: newUnits }
+      };
+
+      autoSave(newState);
+      showNotification(`${unit.name} 转职为 ${promo.name}！`, 'success');
+      return newState;
+    }),
+
+    getUnitGrowthPreview: (uid, targetLevel) => {
+      const state = get(campaignStore);
+      const unit = state.unitPool.units.find(u => u.uid === uid);
+      if (!unit) return null;
+      return previewGrowth(unit, targetLevel);
+    },
 
     getRosterSynergy: () => {
       const state = get(campaignStore);

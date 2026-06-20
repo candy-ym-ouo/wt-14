@@ -1,0 +1,588 @@
+import { writable, derived, get } from 'svelte/store';
+import { CHAPTERS, getLevelById, getChapterById, getAllLevels, CHARACTERS } from '$lib/config/chapters.js';
+import { UNIT_TYPES } from '$lib/config/units.js';
+import {
+  calculateStatGrowth, applyExp, applyRarityBonus, generateRarity,
+  getExpRequired, getExpToNextLevel, MAX_LEVEL, UNIT_RARITY
+} from '$lib/config/unitGrowth.js';
+import {
+  loadCampaignProgress, saveCampaignProgress,
+  loadUnitPool, saveUnitPool, addUnitToPool, updateUnitInPool,
+  isLevelUnlocked, unlockAchievement, saveGameRecord, loadSettings
+} from '$lib/utils/storage.js';
+
+function createInitialCampaignState() {
+  const progress = loadCampaignProgress();
+  const unitPool = loadUnitPool();
+  const settings = loadSettings();
+
+  return {
+    view: 'menu',
+    selectedChapterId: progress.currentChapterId,
+    selectedLevelId: progress.currentLevelId,
+    dialog: {
+      active: false,
+      type: null,
+      index: 0,
+      lines: [],
+      levelId: null,
+      chapterId: null
+    },
+    battle: {
+      active: false,
+      levelId: null,
+      chapterId: null,
+      deployedUnits: [],
+      battleStartUnits: [],
+      killedEnemies: [],
+      damageDealt: [],
+      objectivesCompleted: []
+    },
+    rewards: {
+      active: false,
+      data: null
+    },
+    progress,
+    unitPool,
+    settings,
+    notification: null,
+    isLoading: false
+  };
+}
+
+function createCampaignStore() {
+  const { subscribe, set, update } = writable(createInitialCampaignState());
+
+  function showNotification(message, type = 'info') {
+    update(state => ({
+      ...state,
+      notification: { message, type, id: Date.now() }
+    }));
+    setTimeout(() => {
+      update(state => ({ ...state, notification: null }));
+    }, 3000);
+  }
+
+  function autoSave(state) {
+    if (state.settings.autoSave) {
+      saveCampaignProgress(state.progress);
+      saveUnitPool(state.unitPool);
+    }
+  }
+
+  return {
+    subscribe,
+
+    setView: (view) => update(state => ({ ...state, view })),
+
+    selectChapter: (chapterId) => update(state => {
+      const chapter = getChapterById(chapterId);
+      if (!chapter) return state;
+      const isUnlocked = state.progress.unlockedChapters.includes(chapterId);
+      if (!isUnlocked) {
+        showNotification('该章节尚未解锁', 'warning');
+        return state;
+      }
+      return {
+        ...state,
+        selectedChapterId: chapterId,
+        view: 'chapter_map'
+      };
+    }),
+
+    selectLevel: (levelId) => update(state => {
+      const levelData = getLevelById(levelId);
+      if (!levelData) return state;
+
+      const unlocked = isLevelUnlocked(levelId, levelData.prerequisites, state.progress.completedLevels);
+      if (!unlocked) {
+        showNotification('该关卡尚未解锁，请先完成前置关卡', 'warning');
+        return state;
+      }
+
+      return {
+        ...state,
+        selectedLevelId: levelId,
+        dialog: {
+          active: true,
+          type: 'pre',
+          index: 0,
+          lines: levelData.preDialog || [],
+          levelId,
+          chapterId: levelData.chapterId
+        }
+      };
+    }),
+
+    nextDialogLine: () => update(state => {
+      if (!state.dialog.active) return state;
+
+      const { index, lines, type, levelId, chapterId } = state.dialog;
+
+      if (index < lines.length - 1) {
+        return {
+          ...state,
+          dialog: { ...state.dialog, index: index + 1 }
+        };
+      }
+
+      if (type === 'pre') {
+        return {
+          ...state,
+          dialog: { ...state.dialog, active: false },
+          view: 'unit_deploy'
+        };
+      }
+
+      if (type === 'post') {
+        const levelData = getLevelById(levelId);
+        const chapter = getChapterById(chapterId);
+        const levelIdx = chapter.levels.findIndex(l => l.id === levelId);
+
+        if (levelIdx === chapter.levels.length - 1 && chapter.chapterEndDialog) {
+          return {
+            ...state,
+            dialog: {
+              active: true,
+              type: 'chapter_end',
+              index: 0,
+              lines: chapter.chapterEndDialog,
+              levelId: null,
+              chapterId
+            }
+          };
+        }
+
+        return {
+          ...state,
+          dialog: { ...state.dialog, active: false },
+          view: 'chapter_map',
+          rewards: { active: false, data: null }
+        };
+      }
+
+      if (type === 'chapter_end') {
+        const allLevels = getAllLevels();
+        const chapter = getChapterById(chapterId);
+        const lastLevel = chapter.levels[chapter.levels.length - 1];
+        const lastLevelIdx = allLevels.findIndex(l => l.id === lastLevel.id);
+        const hasNextChapter = lastLevelIdx < allLevels.length - 1;
+
+        if (hasNextChapter) {
+          const nextLevel = allLevels[lastLevelIdx + 1];
+          const nextChapter = getChapterById(nextLevel.chapterId);
+          const newUnlocked = [...new Set([...state.progress.unlockedChapters, nextChapter.id])];
+
+          return {
+            ...state,
+            dialog: { ...state.dialog, active: false },
+            view: 'chapter_map',
+            selectedChapterId: nextChapter.id,
+            progress: { ...state.progress, unlockedChapters: newUnlocked },
+            rewards: { active: false, data: null }
+          };
+        }
+
+        return {
+          ...state,
+          dialog: { ...state.dialog, active: false },
+          view: 'chapter_map',
+          rewards: { active: false, data: null }
+        };
+      }
+
+      return { ...state, dialog: { ...state.dialog, active: false } };
+    }),
+
+    skipDialog: () => update(state => {
+      if (!state.dialog.active) return state;
+
+      const { type, levelId, chapterId } = state.dialog;
+
+      if (type === 'pre') {
+        return {
+          ...state,
+          dialog: { ...state.dialog, active: false },
+          view: 'unit_deploy'
+        };
+      }
+
+      if (type === 'post') {
+        const levelData = getLevelById(levelId);
+        const chapter = getChapterById(chapterId);
+        const levelIdx = chapter.levels.findIndex(l => l.id === levelId);
+
+        if (levelIdx === chapter.levels.length - 1 && chapter.chapterEndDialog) {
+          return {
+            ...state,
+            dialog: {
+              active: true,
+              type: 'chapter_end',
+              index: 0,
+              lines: chapter.chapterEndDialog,
+              levelId: null,
+              chapterId
+            }
+          };
+        }
+
+        return {
+          ...state,
+          dialog: { ...state.dialog, active: false },
+          view: 'chapter_map',
+          rewards: { active: false, data: null }
+        };
+      }
+
+      return {
+        ...state,
+        dialog: { ...state.dialog, active: false },
+        view: 'chapter_map',
+        rewards: { active: false, data: null }
+      };
+    }),
+
+    deployUnits: (selectedUnits) => update(state => {
+      const levelData = getLevelById(state.selectedLevelId);
+      if (!levelData) return state;
+
+      return {
+        ...state,
+        view: 'battle',
+        battle: {
+          active: true,
+          levelId: state.selectedLevelId,
+          chapterId: levelData.chapterId,
+          deployedUnits: selectedUnits,
+          battleStartUnits: JSON.parse(JSON.stringify(selectedUnits)),
+          killedEnemies: [],
+          damageDealt: [],
+          objectivesCompleted: []
+        }
+      };
+    }),
+
+    recordBattleData: (data) => update(state => {
+      if (!state.battle.active) return state;
+
+      return {
+        ...state,
+        battle: {
+          ...state.battle,
+          killedEnemies: data.killedEnemies || state.battle.killedEnemies,
+          damageDealt: data.damageDealt || state.battle.damageDealt,
+          objectivesCompleted: data.objectivesCompleted || state.battle.objectivesCompleted
+        }
+      };
+    }),
+
+    completeBattle: (result) => update(state => {
+      if (!state.battle.active) return state;
+
+      const levelData = getLevelById(state.battle.levelId);
+      const chapter = getChapterById(state.battle.chapterId);
+      const won = result.winner === 'red';
+
+      saveGameRecord({
+        ...result,
+        levelId: state.battle.levelId,
+        chapterId: state.battle.chapterId
+      });
+
+      const newProgress = { ...state.progress };
+      newProgress.battleCount += 1;
+      if (won) {
+        newProgress.victories += 1;
+        if (!newProgress.completedLevels.includes(state.battle.levelId)) {
+          newProgress.completedLevels.push(state.battle.levelId);
+        }
+        newProgress.gold += levelData.rewards.gold;
+        newProgress.totalExp += levelData.rewards.exp;
+        if (newProgress.victories === 1) unlockAchievement('first_victory');
+
+        const lastLevel = chapter.levels[chapter.levels.length - 1];
+        if (lastLevel.id === state.battle.levelId) {
+          if (chapter.id === 'chapter_1') unlockAchievement('chapter_1_complete');
+          if (chapter.id === 'chapter_2') unlockAchievement('chapter_2_complete');
+        }
+      } else {
+        newProgress.defeats += 1;
+      }
+
+      const levelUnits = state.battle.deployedUnits;
+      const killedEnemies = state.battle.killedEnemies;
+      const damageDealt = state.battle.damageDealt;
+      const objectivesCompleted = state.battle.objectivesCompleted;
+
+      const expByUnit = {};
+      levelUnits.forEach(unit => {
+        if (unit.player !== 'red') return;
+        expByUnit[unit.poolUid] = expByUnit[unit.poolUid] || { exp: 0, kills: 0, damage: 0 };
+      });
+
+      killedEnemies.forEach(enemy => {
+        const killerUid = enemy.killedByPoolUid;
+        if (killerUid && expByUnit[killerUid]) {
+          const killExp = { scout: 15, infantry: 25, archer: 30, knight: 50, mage: 45 }[enemy.type] || 20;
+          expByUnit[killerUid].exp += killExp;
+          expByUnit[killerUid].kills += 1;
+        }
+      });
+
+      damageDealt.forEach(dmg => {
+        if (expByUnit[dmg.poolUid]) {
+          expByUnit[dmg.poolUid].exp += dmg.amount * 2;
+          expByUnit[dmg.poolUid].damage += dmg.amount;
+        }
+      });
+
+      if (won) {
+        Object.keys(expByUnit).forEach(uid => {
+          expByUnit[uid].exp += 50 + 100 * objectivesCompleted.length;
+        });
+      }
+
+      const newUnitPool = { ...state.unitPool };
+      const leveledUpUnits = [];
+
+      newUnitPool.units = newUnitPool.units.map(poolUnit => {
+        if (!expByUnit[poolUnit.uid]) return poolUnit;
+
+        const expGain = expByUnit[poolUnit.uid].exp;
+        let currentExp = (poolUnit.exp || 0) + expGain;
+        let level = poolUnit.level || 1;
+        let levelsGained = 0;
+
+        while (level < MAX_LEVEL && currentExp >= getExpRequired(level)) {
+          currentExp -= getExpRequired(level);
+          level += 1;
+          levelsGained += 1;
+        }
+
+        const newStats = calculateStatGrowth(poolUnit.type, level);
+        const leveled = levelsGained > 0;
+
+        if (leveled) {
+          leveledUpUnits.push({
+            ...poolUnit,
+            level,
+            levelsGained,
+            oldStats: {
+              hp: poolUnit.maxHp,
+              attack: poolUnit.attack,
+              defense: poolUnit.defense
+            },
+            newStats
+          });
+          if (level >= MAX_LEVEL) unlockAchievement('max_level_unit');
+        }
+
+        return {
+          ...poolUnit,
+          level,
+          exp: currentExp,
+          maxHp: newStats.hp,
+          attack: newStats.attack,
+          defense: newStats.defense,
+          moveRange: newStats.moveRange,
+          attackRange: newStats.attackRange
+        };
+      });
+
+      const newUnlockedUnits = [...newProgress.unlockedUnits];
+      const newRewardUnits = [];
+
+      if (won && levelData.rewards.unlockUnits && levelData.rewards.unlockUnits.length > 0) {
+        levelData.rewards.unlockUnits.forEach(unitType => {
+          if (!newUnlockedUnits.includes(unitType)) {
+            newUnlockedUnits.push(unitType);
+
+            const baseStats = calculateStatGrowth(unitType, 1);
+            const rarity = generateRarity();
+            let newUnit = {
+              uid: null,
+              type: unitType,
+              name: `${UNIT_TYPES[unitType].name}·新兵`,
+              level: 1,
+              exp: 0,
+              rarity,
+              ...baseStats,
+              maxHp: baseStats.hp
+            };
+            newUnit = applyRarityBonus(newUnit, rarity);
+
+            newUnit.uid = `pool_${newUnitPool.nextUnitId++}`;
+            newUnitPool.units.push(newUnit);
+            newRewardUnits.push(newUnit);
+
+            if (rarity === 'legendary') unlockAchievement('legendary_unit');
+          }
+        });
+
+        if (newUnlockedUnits.length >= Object.keys(UNIT_TYPES).length) {
+          unlockAchievement('all_units_unlocked');
+        }
+      }
+
+      newProgress.unlockedUnits = newUnlockedUnits;
+
+      if (won && result.turns <= Math.floor(levelData.maxTurns / 2)) {
+        unlockAchievement('speed_runner');
+      }
+
+      if (won && result.redUnits === state.battle.battleStartUnits.filter(u => u.player === 'red').length) {
+        unlockAchievement('perfect_battle');
+      }
+
+      const newState = {
+        ...state,
+        progress: newProgress,
+        unitPool: newUnitPool,
+        battle: { ...state.battle, active: false },
+        rewards: {
+          active: won,
+          data: won ? {
+            exp: levelData.rewards.exp,
+            gold: levelData.rewards.gold,
+            units: newRewardUnits,
+            leveledUp: leveledUpUnits,
+            objectivesCompleted,
+            expByUnit: Object.keys(expByUnit).map(uid => ({
+              uid,
+              ...expByUnit[uid],
+              unit: newUnitPool.units.find(u => u.uid === uid)
+            })).filter(r => r.unit)
+          } : null
+        }
+      };
+
+      if (won) {
+        newState.dialog = {
+          active: true,
+          type: 'post',
+          index: 0,
+          lines: levelData.postDialog || [],
+          levelId: state.battle.levelId,
+          chapterId: state.battle.chapterId
+        };
+      }
+
+      autoSave(newState);
+      if (won) showNotification(`胜利！获得 ${levelData.rewards.exp} 经验，${levelData.rewards.gold} 金币`, 'success');
+      else showNotification('战斗失败，再接再厉！', 'error');
+
+      return newState;
+    }),
+
+    addNewUnit: (unitType, options = {}) => update(state => {
+      if (!state.progress.unlockedUnits.includes(unitType)) {
+        showNotification('该单位尚未解锁', 'warning');
+        return state;
+      }
+
+      const baseStats = calculateStatGrowth(unitType, 1);
+      const rarity = options.rarity || generateRarity();
+      let newUnit = {
+        type: unitType,
+        name: options.name || `${UNIT_TYPES[unitType].name}·新兵`,
+        level: 1,
+        exp: 0,
+        rarity,
+        ...baseStats,
+        maxHp: baseStats.hp
+      };
+      newUnit = applyRarityBonus(newUnit, rarity);
+
+      newUnit.uid = `pool_${state.unitPool.nextUnitId++}`;
+      const newPool = {
+        ...state.unitPool,
+        units: [...state.unitPool.units, newUnit]
+      };
+
+      autoSave({ ...state, unitPool: newPool });
+      showNotification(`获得新单位：${newUnit.name}（${UNIT_RARITY[rarity].name}）`, 'success');
+
+      return { ...state, unitPool: newPool };
+    }),
+
+    dismissReward: () => update(state => ({
+      ...state,
+      rewards: { active: false, data: null }
+    })),
+
+    resetProgress: () => {
+      set(createInitialCampaignState());
+      showNotification('战役进度已重置', 'info');
+    },
+
+    save: () => {
+      const state = get(campaignStore);
+      saveCampaignProgress(state.progress);
+      saveUnitPool(state.unitPool);
+      showNotification('存档成功', 'success');
+    },
+
+    load: () => {
+      set(createInitialCampaignState());
+      showNotification('读档成功', 'success');
+    },
+
+    _autoSave: autoSave,
+    _showNotification: showNotification
+  };
+}
+
+export const campaignStore = createCampaignStore();
+
+export const currentChapter = derived(campaignStore, $campaign => {
+  return getChapterById($campaign.selectedChapterId) || null;
+});
+
+export const currentLevel = derived(campaignStore, $campaign => {
+  return getLevelById($campaign.selectedLevelId) || null;
+});
+
+export const currentDialogLine = derived(campaignStore, $campaign => {
+  if (!$campaign.dialog.active) return null;
+  const line = $campaign.dialog.lines[$campaign.dialog.index];
+  if (!line) return null;
+  const character = CHARACTERS[line.character] || CHARACTERS.narrator;
+  return { ...line, character };
+});
+
+export const availableUnits = derived(campaignStore, $campaign => {
+  return $campaign.unitPool.units.filter(u =>
+    $campaign.progress.unlockedUnits.includes(u.type)
+  );
+});
+
+export const getUnitByUid = (uid) => derived(campaignStore, $campaign =>
+  $campaign.unitPool.units.find(u => u.uid === uid) || null
+);
+
+export const chapterProgress = derived(campaignStore, $campaign => {
+  const result = {};
+  CHAPTERS.forEach(chapter => {
+    const total = chapter.levels.length;
+    const completed = chapter.levels.filter(l =>
+      $campaign.progress.completedLevels.includes(l.id)
+    ).length;
+    result[chapter.id] = {
+      total,
+      completed,
+      percentage: total > 0 ? Math.round((completed / total) * 100) : 0,
+      isUnlocked: $campaign.progress.unlockedChapters.includes(chapter.id)
+    };
+  });
+  return result;
+});
+
+export const levelStatusMap = derived(campaignStore, $campaign => {
+  const map = {};
+  getAllLevels().forEach(level => {
+    const completed = $campaign.progress.completedLevels.includes(level.id);
+    const unlocked = isLevelUnlocked(level.id, level.prerequisites, $campaign.progress.completedLevels);
+    map[level.id] = { completed, unlocked };
+  });
+  return map;
+});

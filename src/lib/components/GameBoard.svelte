@@ -309,14 +309,14 @@
 
     if (result.attackerHit) {
       onCombatLog?.(`${attackerName} 攻击 ${defenderName}，造成 ${result.defenderDamage} 点伤害`);
-      gameStore.applyDamage(defender.id, result.defenderDamage);
+      gameStore.applyDamage(defender.id, result.defenderDamage, attacker.id);
     } else {
       onCombatLog?.(`${attackerName} 攻击 ${defenderName}，未命中`);
     }
 
     if (result.attackerDamage > 0) {
       onCombatLog?.(`${defenderName} 反击，造成 ${result.attackerDamage} 点伤害`);
-      gameStore.applyDamage(attacker.id, result.attackerDamage);
+      gameStore.applyDamage(attacker.id, result.attackerDamage, defender.id);
     }
 
     gameStore.markAttacked(attacker.id);

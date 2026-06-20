@@ -6,38 +6,72 @@ import { GAME_RULES, WIN_CONDITIONS } from '$lib/config/gameRules.js';
 
 let unitIdCounter = 0;
 
-function createUnit(type, player, x, y) {
+function createUnit(type, player, x, y, overrides = {}) {
   const baseType = UNIT_TYPES[type];
+  const maxHp = overrides.maxHp ?? baseType.hp;
   return {
     id: `unit_${++unitIdCounter}`,
     type,
     player,
     x,
     y,
-    hp: baseType.hp,
-    maxHp: baseType.hp,
-    attack: baseType.attack,
-    defense: baseType.defense,
-    moveRange: baseType.moveRange,
-    attackRange: baseType.attackRange,
+    hp: overrides.hp ?? maxHp,
+    maxHp,
+    attack: overrides.attack ?? baseType.attack,
+    defense: overrides.defense ?? baseType.defense,
+    moveRange: overrides.moveRange ?? baseType.moveRange,
+    attackRange: overrides.attackRange ?? baseType.attackRange,
+    level: overrides.level ?? 1,
+    rarity: overrides.rarity ?? 'common',
+    poolUid: overrides.poolUid ?? null,
     hasMoved: false,
     hasAttacked: false,
     tempBuffs: { attack: 0, defense: 0, moveRange: 0 }
   };
 }
 
-function createInitialState() {
+function createBattleStats() {
+  return {
+    killedEnemies: [],
+    damageDealt: [],
+    objectivesCompleted: []
+  };
+}
+
+function createInitialState(options = {}) {
   unitIdCounter = 0;
   const units = [];
-  
-  INITIAL_UNITS.red.forEach(u => {
-    units.push(createUnit(u.type, 'red', u.x, u.y));
-  });
-  INITIAL_UNITS.blue.forEach(u => {
-    units.push(createUnit(u.type, 'blue', u.x, u.y));
-  });
+  const battleStats = createBattleStats();
+
+  if (options.customUnits && options.customUnits.length > 0) {
+    options.customUnits.forEach(u => {
+      units.push(createUnit(u.type, u.player || 'red', u.x, u.y, {
+        maxHp: u.maxHp,
+        hp: u.hp,
+        attack: u.attack,
+        defense: u.defense,
+        moveRange: u.moveRange,
+        attackRange: u.attackRange,
+        level: u.level,
+        rarity: u.rarity,
+        poolUid: u.poolUid
+      }));
+    });
+  } else {
+    INITIAL_UNITS.red.forEach(u => {
+      units.push(createUnit(u.type, 'red', u.x, u.y));
+    });
+    INITIAL_UNITS.blue.forEach(u => {
+      units.push(createUnit(u.type, 'blue', u.x, u.y));
+    });
+  }
 
   return {
+    mode: options.mode || 'skirmish',
+    levelId: options.levelId || null,
+    chapterId: options.chapterId || null,
+    maxTurns: options.maxTurns || GAME_RULES.maxTurns,
+    winCondition: options.winCondition || 'default',
     units,
     currentPlayer: GAME_RULES.startingPlayer,
     turn: 1,
@@ -57,7 +91,8 @@ function createInitialState() {
     turnHistory: [],
     extraActions: 0,
     movementLimit: null,
-    revealEnemy: false
+    revealEnemy: false,
+    battleStats
   };
 }
 
@@ -68,6 +103,34 @@ function shuffleDeck(deck) {
     [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
   }
   return shuffled;
+}
+
+function recordDamage(battleStats, attackerUnit, targetUnit, damage) {
+  if (attackerUnit && attackerUnit.player === 'red' && damage > 0) {
+    const existing = battleStats.damageDealt.find(d => 
+      (d.unitId === attackerUnit.id) || (d.poolUid && d.poolUid === attackerUnit.poolUid)
+    );
+    if (existing) {
+      existing.amount += damage;
+    } else {
+      battleStats.damageDealt.push({
+        unitId: attackerUnit.id,
+        poolUid: attackerUnit.poolUid,
+        amount: damage
+      });
+    }
+  }
+}
+
+function recordKill(battleStats, attackerUnit, killedUnit) {
+  if (killedUnit.player === 'blue' && attackerUnit) {
+    battleStats.killedEnemies.push({
+      id: killedUnit.id,
+      type: killedUnit.type,
+      killedBy: attackerUnit.id,
+      killedByPoolUid: attackerUnit.poolUid
+    });
+  }
 }
 
 function createGameStore() {
@@ -96,7 +159,7 @@ function createGameStore() {
       validAttackTiles: tiles
     })),
     moveUnit: (unitId, newX, newY) => update(state => {
-      const units = state.units.map(u => 
+      const units = state.units.map(u =>
         u.id === unitId ? { ...u, x: newX, y: newY, hasMoved: true } : u
       );
       return {
@@ -106,15 +169,28 @@ function createGameStore() {
         validMoveTiles: []
       };
     }),
-    applyDamage: (targetId, damage) => update(state => {
+    applyDamage: (targetId, damage, attackerId = null) => update(state => {
+      const targetUnit = state.units.find(u => u.id === targetId);
+      const attackerUnit = attackerId ? state.units.find(u => u.id === attackerId) : null;
+      const newBattleStats = JSON.parse(JSON.stringify(state.battleStats));
+
+      recordDamage(newBattleStats, attackerUnit, targetUnit, damage);
+
       let units = state.units.map(u => {
         if (u.id === targetId) {
           return { ...u, hp: Math.max(0, u.hp - damage) };
         }
         return u;
       });
+
+      const killed = units.find(u => u.id === targetId && u.hp <= 0);
+      if (killed) {
+        recordKill(newBattleStats, attackerUnit, killed);
+      }
+
       units = units.filter(u => u.hp > 0);
-      return { ...state, units };
+
+      return { ...state, units, battleStats: newBattleStats };
     }),
     healUnit: (targetId, amount) => update(state => {
       const units = state.units.map(u => {
@@ -138,7 +214,7 @@ function createGameStore() {
     endTurn: () => update(state => {
       const nextPlayer = state.currentPlayer === 'red' ? 'blue' : 'red';
       const newTurn = state.currentPlayer === 'blue' ? state.turn + 1 : state.turn;
-      
+
       const units = state.units.map(u => ({
         ...u,
         hasMoved: false,
@@ -177,13 +253,13 @@ function createGameStore() {
     applyEventCardEffect: (card, targetId) => update(state => {
       let newState = { ...state };
       const currentUnits = [...state.units];
-      
+
       switch (card.effect) {
         case 'damage_random_enemy': {
           const enemies = currentUnits.filter(u => u.player !== state.currentPlayer);
           if (enemies.length > 0) {
             const target = enemies[Math.floor(Math.random() * enemies.length)];
-            newState.units = currentUnits.map(u => 
+            newState.units = currentUnits.map(u =>
               u.id === target.id ? { ...u, hp: Math.max(0, u.hp - card.value) } : u
             ).filter(u => u.hp > 0);
           }
@@ -193,23 +269,23 @@ function createGameStore() {
           const allies = currentUnits.filter(u => u.player === state.currentPlayer && u.hp < u.maxHp);
           if (allies.length > 0) {
             const target = allies[Math.floor(Math.random() * allies.length)];
-            newState.units = currentUnits.map(u => 
+            newState.units = currentUnits.map(u =>
               u.id === target.id ? { ...u, hp: Math.min(u.maxHp, u.hp + card.value) } : u
             );
           }
           break;
         }
         case 'buff_all_attack': {
-          newState.units = currentUnits.map(u => 
-            u.player === state.currentPlayer 
+          newState.units = currentUnits.map(u =>
+            u.player === state.currentPlayer
               ? { ...u, tempBuffs: { ...u.tempBuffs, attack: u.tempBuffs.attack + card.value } }
               : u
           );
           break;
         }
         case 'debuff_all_enemy_move': {
-          newState.units = currentUnits.map(u => 
-            u.player !== state.currentPlayer 
+          newState.units = currentUnits.map(u =>
+            u.player !== state.currentPlayer
               ? { ...u, tempBuffs: { ...u.tempBuffs, moveRange: u.tempBuffs.moveRange - card.value } }
               : u
           );
@@ -219,7 +295,7 @@ function createGameStore() {
           const allies = currentUnits.filter(u => u.player === state.currentPlayer);
           if (allies.length > 0) {
             const target = allies[Math.floor(Math.random() * allies.length)];
-            newState.units = currentUnits.map(u => 
+            newState.units = currentUnits.map(u =>
               u.id === target.id ? { ...u, attack: u.attack + card.value } : u
             );
           }
@@ -228,15 +304,15 @@ function createGameStore() {
         case 'damage_random': {
           if (currentUnits.length > 0) {
             const target = currentUnits[Math.floor(Math.random() * currentUnits.length)];
-            newState.units = currentUnits.map(u => 
+            newState.units = currentUnits.map(u =>
               u.id === target.id ? { ...u, hp: Math.max(0, u.hp - card.value) } : u
             ).filter(u => u.hp > 0);
           }
           break;
         }
         case 'permanent_buff_all_defense': {
-          newState.units = currentUnits.map(u => 
-            u.player === state.currentPlayer 
+          newState.units = currentUnits.map(u =>
+            u.player === state.currentPlayer
               ? { ...u, defense: u.defense + card.value }
               : u
           );
@@ -262,8 +338,8 @@ function createGameStore() {
           break;
         }
         case 'heal_all_ally': {
-          newState.units = currentUnits.map(u => 
-            u.player === state.currentPlayer 
+          newState.units = currentUnits.map(u =>
+            u.player === state.currentPlayer
               ? { ...u, hp: Math.min(u.maxHp, u.hp + card.value) }
               : u
           );
@@ -277,10 +353,10 @@ function createGameStore() {
       if (state.cardsPlayedThisTurn >= EVENT_CARD_CONFIG.playPerTurn) return state;
       const card = state.eventHand[cardIndex];
       if (!card) return state;
-      
+
       const newHand = [...state.eventHand];
       newHand.splice(cardIndex, 1);
-      
+
       return {
         ...state,
         eventHand: newHand,
@@ -296,11 +372,33 @@ function createGameStore() {
       ...state,
       baseCaptureProgress: captureProgress
     })),
+    addObjective: (objectiveId) => update(state => {
+      const newStats = JSON.parse(JSON.stringify(state.battleStats));
+      if (!newStats.objectivesCompleted.includes(objectiveId)) {
+        newStats.objectivesCompleted.push(objectiveId);
+      }
+      return { ...state, battleStats: newStats };
+    }),
     addTurnHistory: (entry) => update(state => ({
       ...state,
       turnHistory: [...state.turnHistory, entry]
     })),
-    reset: () => set(createInitialState())
+    getBattleStats: () => {
+      const state = get(gameStore);
+      return JSON.parse(JSON.stringify(state.battleStats));
+    },
+    startCampaignBattle: (options) => {
+      set(createInitialState({
+        mode: 'campaign',
+        levelId: options.levelId,
+        chapterId: options.chapterId,
+        customUnits: options.units,
+        maxTurns: options.maxTurns,
+        winCondition: options.winCondition
+      }));
+    },
+    reset: () => set(createInitialState()),
+    resetCampaign: (options) => set(createInitialState(options))
   };
 }
 
@@ -311,7 +409,7 @@ export const selectedUnit = derived(gameStore, $game => {
   return $game.units.find(u => u.id === $game.selectedUnitId) || null;
 });
 
-export const playerUnits = (player) => derived(gameStore, $game => 
+export const playerUnits = (player) => derived(gameStore, $game =>
   $game.units.filter(u => u.player === player)
 );
 

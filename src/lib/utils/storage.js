@@ -17,7 +17,9 @@ export function saveGameRecord(result) {
       levelId: result.levelId || null,
       chapterId: result.chapterId || null,
       synergies: result.synergies || [],
-      classCounts: result.classCounts || {}
+      classCounts: result.classCounts || {},
+      mode: result.mode || 'skirmish',
+      ruins: result.ruins || null
     };
     records.unshift(record);
     const trimmed = records.slice(0, 100);

@@ -808,14 +808,16 @@ function createCampaignStore() {
       newProgress.totalExp += result.exp;
       newProgress.ruinsBestFloor = Math.max(newProgress.ruinsBestFloor || 0, result.floorsCleared);
 
+      const expPerUnit = Math.floor(result.exp / Math.max(1, result.units.length));
       const expByUnit = {};
       result.units.forEach(unit => {
-        if (unit.poolUid) {
-          expByUnit[unit.poolUid] = Math.floor(result.exp / result.units.length);
+        const poolUid = unit.poolUid || unit.uid;
+        if (poolUid) {
+          expByUnit[poolUid] = expPerUnit;
         }
       });
 
-      const newUnitPool = { ...state.unitPool };
+      const newUnitPool = { ...state.unitPool, units: [...state.unitPool.units] };
       const leveledUpUnits = [];
 
       newUnitPool.units = newUnitPool.units.map(poolUnit => {
@@ -854,12 +856,41 @@ function createCampaignStore() {
           level,
           exp: currentExp,
           maxHp: newStats.hp,
+          hp: newStats.hp,
           attack: newStats.attack,
           defense: newStats.defense,
           moveRange: newStats.moveRange,
           attackRange: newStats.attackRange
         };
       });
+
+      const classCounts = {};
+      result.units.forEach(u => {
+        classCounts[u.type] = (classCounts[u.type] || 0) + 1;
+      });
+
+      saveGameRecord({
+        winner: result.success ? 'red' : 'blue',
+        turns: result.turns || 0,
+        redUnits: result.survivedUnits,
+        blueUnits: result.units ? 0 : 0,
+        mode: 'ruins',
+        synergies: [],
+        classCounts,
+        ruins: {
+          floorsCleared: result.floorsCleared,
+          totalUnits: result.totalUnits,
+          survivedUnits: result.survivedUnits,
+          killedEnemies: result.killedEnemies,
+          treasuresCollected: result.treasuresCollected,
+          gold: result.gold.total,
+          exp: result.exp,
+          success: result.success
+        }
+      });
+
+      saveCampaignProgress(newProgress);
+      saveUnitPool(newUnitPool);
 
       const newState = {
         ...state,

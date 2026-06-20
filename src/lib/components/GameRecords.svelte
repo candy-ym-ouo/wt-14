@@ -138,28 +138,37 @@
           {:else}
             <div class="records-header">
               <span>时间</span>
+              <span>模式</span>
               <span>结果</span>
               <span>回合</span>
-              <span>红方剩余</span>
-              <span>蓝方剩余</span>
-              <span>激活协同</span>
+              <span>详情</span>
             </div>
             <div class="records-scroll">
               {#each records as record}
                 <div class="record-row">
                   <span>{formatDate(record.timestamp)}</span>
+                  <span class="mode-badge">
+                    {#if record.mode === 'ruins'}
+                      🏛️ 遗迹
+                    {:else if record.mode === 'campaign'}
+                      ⚔️ 战役
+                    {:else}
+                      🎯 对战
+                    {/if}
+                  </span>
                   <span class:red={record.winner === 'red'} class:blue={record.winner === 'blue'}>
-                    {record.winner === 'red' ? '红方胜' : record.winner === 'blue' ? '蓝方胜' : '平局'}
+                    {#if record.mode === 'ruins'}
+                      {record.ruins?.success ? '探索成功' : '探索结束'}
+                    {:else}
+                      {record.winner === 'red' ? '红方胜' : record.winner === 'blue' ? '蓝方胜' : '平局'}
+                    {/if}
                   </span>
                   <span>{record.turns}</span>
-                  <span class="red">{record.redUnitsRemaining}</span>
-                  <span class="blue">{record.blueUnitsRemaining}</span>
-                  <span class="synergies">
-                    {#if record.synergies && record.synergies.length > 0}
-                      {record.synergies.slice(0, 2).join('、')}
-                      {#if record.synergies.length > 2}...{/if}
+                  <span class="details">
+                    {#if record.mode === 'ruins' && record.ruins}
+                      {record.ruins.floorsCleared}层 / 💰{record.ruins.gold} / 📦{record.ruins.treasuresCollected}
                     {:else}
-                      -
+                      红:{record.redUnitsRemaining} / 蓝:{record.blueUnitsRemaining}
                     {/if}
                   </span>
                 </div>
@@ -370,7 +379,7 @@
   }
   .records-header, .record-row {
     display: grid;
-    grid-template-columns: 1.2fr 0.8fr 0.5fr 0.7fr 0.7fr 1fr;
+    grid-template-columns: 1.2fr 0.7fr 0.8fr 0.5fr 1.5fr;
     gap: 8px;
     padding: 8px 10px;
     font-size: 12px;
@@ -402,6 +411,21 @@
 
   .synergies {
     color: #ffcc00;
+    font-size: 11px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .mode-badge {
+    display: inline-block;
+    font-size: 11px;
+    color: #ffcc00;
+    white-space: nowrap;
+  }
+
+  .details {
+    color: #aaa;
     font-size: 11px;
     white-space: nowrap;
     overflow: hidden;
@@ -449,7 +473,7 @@
       grid-template-columns: 1fr;
     }
     .records-header, .record-row {
-      grid-template-columns: 1fr 0.6fr 0.4fr 0.5fr 0.5fr 0.8fr;
+      grid-template-columns: 1fr 0.7fr 0.7fr 0.4fr 1.2fr;
       font-size: 11px;
     }
   }

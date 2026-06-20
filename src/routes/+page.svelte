@@ -138,7 +138,7 @@
     }
 
     const battleStats = gameStore.getBattleStats();
-    const settlement = calculateRuinsSettlement(game.ruins, game.units, battleStats);
+    const settlement = calculateRuinsSettlement(game.ruins, game.units, battleStats, game.turn);
     
     campaignStore.completeRuinsExploration(settlement);
   }

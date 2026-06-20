@@ -188,6 +188,7 @@ export function placePlayerUnits(units, terrainMap) {
         placedUnits.push({
           ...unit,
           id: `ruin_player_${index}`,
+          poolUid: unit.uid || unit.poolUid,
           player: 'red',
           x,
           y,
@@ -527,7 +528,7 @@ function applyEffect(effect, units, gold) {
   return result;
 }
 
-export function calculateRuinsSettlement(ruinsState, units, battleStats) {
+export function calculateRuinsSettlement(ruinsState, units, battleStats, turns = 0) {
   const redUnits = units.filter(u => u.player === 'red');
   const survivingUnits = redUnits.length;
   const totalUnits = ruinsState.initialPlayerCount || redUnits.length;
@@ -546,6 +547,7 @@ export function calculateRuinsSettlement(ruinsState, units, battleStats) {
     totalUnits,
     killedEnemies: battleStats?.killedEnemies?.length || 0,
     treasuresCollected: ruinsState.treasuresCollected?.length || 0,
+    turns,
     gold: {
       floor: floorBonus,
       survival: survivalBonus,

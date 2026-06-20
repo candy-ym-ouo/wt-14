@@ -307,28 +307,50 @@ export const GROWTH_TABLE = {
 };
 
 export function calculateStatGrowth(unitType, level) {
-  const base = UNIT_TYPES[unitType];
-  const growth = GROWTH_TABLE[unitType];
+  let base = UNIT_TYPES[unitType];
+  let growth = GROWTH_TABLE[unitType];
+  let promoBonus = null;
+
+  if (!base || !growth) {
+    const promoUnit = PROMOTION_UNIT_TYPES[unitType];
+    if (promoUnit) {
+      base = UNIT_TYPES[promoUnit.baseType];
+      growth = GROWTH_TABLE[promoUnit.baseType];
+      promoBonus = promoUnit.promotion.statChanges;
+    }
+  }
+
   if (!base || !growth) return null;
 
   const levelBonus = level - 1;
+  let stats;
   if (levelBonus <= 0) {
-    return {
+    stats = {
       hp: base.hp,
       attack: base.attack,
       defense: base.defense,
       moveRange: base.moveRange,
       attackRange: base.attackRange
     };
+  } else {
+    stats = {
+      hp: base.hp + Math.floor(levelBonus * growth.hp),
+      attack: base.attack + Math.floor(levelBonus * growth.attack),
+      defense: base.defense + Math.floor(levelBonus * growth.defense),
+      moveRange: base.moveRange + Math.floor(levelBonus * growth.moveRange),
+      attackRange: base.attackRange + Math.floor(levelBonus * growth.attackRange)
+    };
   }
 
-  return {
-    hp: base.hp + Math.floor(levelBonus * growth.hp),
-    attack: base.attack + Math.floor(levelBonus * growth.attack),
-    defense: base.defense + Math.floor(levelBonus * growth.defense),
-    moveRange: base.moveRange + Math.floor(levelBonus * growth.moveRange),
-    attackRange: base.attackRange + Math.floor(levelBonus * growth.attackRange)
-  };
+  if (promoBonus) {
+    stats.hp += promoBonus.hp || 0;
+    stats.attack += promoBonus.attack || 0;
+    stats.defense += promoBonus.defense || 0;
+    stats.moveRange += promoBonus.moveRange || 0;
+    stats.attackRange += promoBonus.attackRange || 0;
+  }
+
+  return stats;
 }
 
 export const EXP_REWARD = {
@@ -408,8 +430,7 @@ export function applyExp(unit, expGained) {
     levelsGained += 1;
   }
 
-  const baseType = unit.baseType || unit.type;
-  const newStats = calculateStatGrowth(baseType, level);
+  const newStats = calculateStatGrowth(unit.type, level);
   const allocatedStats = unit.allocatedStats || { hp: 0, attack: 0, defense: 0 };
   const currentStatPoints = unit.statPoints || 0;
   const newStatPoints = currentStatPoints + levelsGained * STAT_POINTS_PER_LEVEL;

@@ -413,7 +413,7 @@
 </div>
 
 {#if selectedGrowthUnit}
-  <UnitGrowthPanel unit={selectedGrowthUnit} onClose={closeGrowthPanel} />
+  <UnitGrowthPanel uid={selectedGrowthUnit.uid} onClose={closeGrowthPanel} />
 {/if}
 
 <style>

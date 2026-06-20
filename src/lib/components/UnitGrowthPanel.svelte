@@ -1,4 +1,5 @@
 <script>
+  import { derived } from 'svelte/store';
   import { campaignStore } from '$lib/stores/campaignStore.js';
   import { UNIT_TYPES, UNIT_CLASSES } from '$lib/config/units.js';
   import {
@@ -10,32 +11,36 @@
   import GrowthPreview from './GrowthPreview.svelte';
   import ClassPromotion from './ClassPromotion.svelte';
 
-  export let unit;
+  export let uid;
   export let onClose;
 
   let activeTab = 'stats';
-  let showPreview = false;
-  let showPromotion = false;
-  let previewLevel = 10;
 
-  $: unitType = UNIT_TYPES[unit.baseType || unit.type] || PROMOTION_UNIT_TYPES[unit.type];
-  $: rarity = UNIT_RARITY[unit.rarity] || UNIT_RARITY.common;
-  $: expNeeded = unit.level < MAX_LEVEL ? getExpRequired(unit.level) : 0;
-  $: expPct = unit.level >= MAX_LEVEL ? 100 : (unit.exp / expNeeded * 100);
-  $: statPoints = unit.statPoints || 0;
-  $: allocatedStats = unit.allocatedStats || { hp: 0, attack: 0, defense: 0 };
-  $: canPromoteNow = canPromote(unit);
-  $: promotionOptions = getPromotionOptions(unit.baseType || unit.type, unit.level);
-  $: baseType = unit.baseType || unit.type;
+  const unit = derived(campaignStore, $campaign =>
+    $campaign.unitPool.units.find(u => u.uid === uid) || null
+  );
+
+  $: unitType = $unit
+    ? UNIT_TYPES[$unit.baseType || $unit.type] || PROMOTION_UNIT_TYPES[$unit.type]
+    : null;
+  $: rarity = $unit ? UNIT_RARITY[$unit.rarity] || UNIT_RARITY.common : UNIT_RARITY.common;
+  $: expNeeded = $unit && $unit.level < MAX_LEVEL ? getExpRequired($unit.level) : 0;
+  $: expPct = $unit && $unit.level >= MAX_LEVEL ? 100 : ($unit?.exp / expNeeded * 100) || 0;
+  $: statPoints = $unit?.statPoints || 0;
+  $: allocatedStats = $unit?.allocatedStats || { hp: 0, attack: 0, defense: 0 };
+  $: canPromoteNow = $unit ? canPromote($unit) : false;
+  $: promotionOptions = $unit ? getPromotionOptions($unit.baseType || $unit.type, $unit.level) : [];
+  $: baseType = $unit?.baseType || $unit?.type || '';
   $: className = UNIT_CLASSES[UNIT_TYPES[baseType]?.unitClass]?.name || baseType;
 
   function handleAllocate(statId) {
-    campaignStore.allocateStat(unit.uid, statId);
+    if (!$unit) return;
+    campaignStore.allocateStat($unit.uid, statId);
   }
 
   function handlePromotion(promotionId) {
-    campaignStore.promoteUnit(unit.uid, promotionId);
-    showPromotion = false;
+    if (!$unit) return;
+    campaignStore.promoteUnit($unit.uid, promotionId);
   }
 
   function formatColor(num) {
@@ -47,6 +52,7 @@
   }
 </script>
 
+{#if $unit}
 <div class="growth-overlay" on:click={onClose}>
   <div class="growth-panel" on:click|stopPropagation>
     <div class="panel-header">
@@ -61,15 +67,15 @@
         </span>
       </div>
       <div class="unit-info">
-        <div class="unit-name" style="color: {rarity.color}">{unit.name}</div>
+        <div class="unit-name" style="color: {rarity.color}">{$unit.name}</div>
         <div class="unit-type">
           {getClassIcon(UNIT_TYPES[baseType]?.unitClass)} {unitType.name}
-          {#if unit.promoted}
+          {#if $unit.promoted}
             <span class="promoted-badge">★ 已转职</span>
           {/if}
         </div>
         <div class="unit-level-row">
-          <span class="level-badge">Lv.{unit.level}</span>
+          <span class="level-badge">Lv.{$unit.level}</span>
           <span class="rarity-tag" style="background: {rarity.color}22; color: {rarity.color}">
             {rarity.name}
           </span>
@@ -78,7 +84,7 @@
       <div class="exp-section">
         <div class="exp-label">
           <span>经验值</span>
-          <span>{unit.level >= MAX_LEVEL ? '已满级' : `${unit.exp} / ${expNeeded}`}</span>
+          <span>{$unit.level >= MAX_LEVEL ? '已满级' : `${$unit.exp} / ${expNeeded}`}</span>
         </div>
         <div class="exp-bar">
           <div class="exp-fill" style="width: {Math.min(100, expPct)}%"></div>
@@ -118,11 +124,11 @@
                 <div class="stat-info">
                   <div class="stat-name">{stat.name}</div>
                   <div class="stat-detail">
-                    基础: {unit[stat.id] - (allocatedStats[stat.id] || 0)}
+                    基础: {$unit[stat.id] - (allocatedStats[stat.id] || 0)}
                     {#if allocatedStats[stat.id] > 0}
                       <span class="allocated-bonus"> +{allocatedStats[stat.id]}</span>
                     {/if}
-                    <span class="stat-total"> = {unit[stat.id]}</span>
+                    <span class="stat-total"> = {$unit[stat.id]}</span>
                   </div>
                 </div>
                 <button
@@ -141,30 +147,31 @@
             <div class="stat-card">
               <div class="stat-card-icon">👟</div>
               <div class="stat-card-name">移动</div>
-              <div class="stat-card-value">{unit.moveRange}</div>
+              <div class="stat-card-value">{$unit.moveRange}</div>
             </div>
             <div class="stat-card">
               <div class="stat-card-icon">🎯</div>
               <div class="stat-card-name">射程</div>
-              <div class="stat-card-value">{unit.attackRange}</div>
+              <div class="stat-card-value">{$unit.attackRange}</div>
             </div>
           </div>
 
-          {#if unit.skill}
+          {#if $unit.skill}
             <div class="skill-section">
               <div class="skill-title">✨ 职业技能</div>
-              <div class="skill-name">{unit.skill}</div>
+              <div class="skill-name">{$unit.skill}</div>
             </div>
           {/if}
         </div>
       {:else if activeTab === 'preview'}
-        <GrowthPreview unit={unit} />
+        <GrowthPreview unit={$unit} />
       {:else if activeTab === 'promotion'}
-        <ClassPromotion unit={unit} onPromote={handlePromotion} />
+        <ClassPromotion unit={$unit} onPromote={handlePromotion} />
       {/if}
     </div>
   </div>
 </div>
+{/if}
 
 <style>
   .growth-overlay {

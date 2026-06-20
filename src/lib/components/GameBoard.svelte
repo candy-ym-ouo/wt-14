@@ -15,9 +15,8 @@
     calculateCombat, 
     checkEliminationOnly
   } from '$lib/utils/gameLogic.js';
-  import { saveGameRecord } from '$lib/utils/storage.js';
-
   export let onCombatLog;
+  export let onBattleEnd;
 
   let container;
   let app;
@@ -328,19 +327,13 @@
 
   function checkEndConditions() {
     const game = get(gameStore);
+    if (game.gameOver) return;
     const winner = checkEliminationOnly(game.units);
     if (winner) {
       gameStore.setWinner(winner);
-      const redUnits = game.units.filter(u => u.player === 'red').length;
-      const blueUnits = game.units.filter(u => u.player === 'blue').length;
-      saveGameRecord({
-        winner,
-        turns: game.turn,
-        redUnits,
-        blueUnits
-      });
       const winnerName = winner === 'red' ? '红方' : winner === 'blue' ? '蓝方' : '平局';
       onCombatLog?.(`🏆 战斗结束！${winnerName} 全歼敌军，获得胜利！`);
+      onBattleEnd?.(winner, 'elimination');
     }
   }
 

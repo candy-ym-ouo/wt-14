@@ -66,7 +66,13 @@
     const maxTurns = game.maxTurns || GAME_RULES.maxTurns;
     const winner = checkWinConditions(game.units, game.turn, captureProgress, maxTurns);
     if (winner) {
-      handleBattleEnd(winner, captureProgress, game);
+      let endReason = 'elimination';
+      if (captureProgress?.red?.base_blue >= 2 || captureProgress?.blue?.base_red >= 2) {
+        endReason = 'capture';
+      } else if (game.turn > maxTurns) {
+        endReason = 'turn_limit';
+      }
+      handleBattleEnd(winner, captureProgress, game, endReason);
       return;
     }
 
@@ -97,13 +103,27 @@
     return null;
   }
 
-  function handleBattleEnd(winner, captureProgress, game) {
-    gameStore.setWinner(winner);
+  function handleBattleBoardEnd(winner, endReason) {
+    const game = get(gameStore);
+    if (game.gameOver && !game._battleEndHandled) {
+      game._battleEndHandled = true;
+      const captureProgress = game.baseCaptureProgress;
+      handleBattleEnd(winner, captureProgress, game, endReason);
+    }
+  }
+
+  function handleBattleEnd(winner, captureProgress, game, endReason) {
+    if (!game._battleEndHandled) {
+      gameStore.setWinner(winner);
+      game._battleEndHandled = true;
+    }
     const redUnits = game.units.filter(u => u.player === 'red').length;
     const blueUnits = game.units.filter(u => u.player === 'blue').length;
 
     let reason = '';
-    if (captureProgress?.red?.base_blue >= 2 || captureProgress?.blue?.base_red >= 2) {
+    if (endReason === 'elimination') {
+      reason = '，全歼敌军获胜';
+    } else if (captureProgress?.red?.base_blue >= 2 || captureProgress?.blue?.base_red >= 2) {
       reason = '，占领基地获胜';
     } else if (game.turn > (game.maxTurns || GAME_RULES.maxTurns)) {
       reason = '，回合耗尽，单位数较多方获胜';
@@ -116,7 +136,6 @@
 
     if (game.mode === 'campaign') {
       const battleStats = gameStore.getBattleStats();
-      const deployedUnits = $campaignStore.battle.deployedUnits;
       const synergies = $campaignStore.battle.activeSynergies || [];
       const classCounts = $campaignStore.battle.classCounts || {};
       $campaignStore.recordBattleData(battleStats);
@@ -315,7 +334,7 @@
 
       <section class="center-panel">
         <div class="board-wrapper">
-          <GameBoard onCombatLog={addLog} />
+          <GameBoard onCombatLog={addLog} onBattleEnd={handleBattleBoardEnd} />
         </div>
         <CombatLog logs={combatLogs} />
       </section>

@@ -82,6 +82,7 @@ function createInitialState(options = {}) {
     eventHand: [],
     eventDeck: shuffleDeck([...EVENT_CARDS]),
     cardsPlayedThisTurn: 0,
+    _battleEndHandled: false,
     baseCaptureProgress: {
       red: { base_blue: 0 },
       blue: { base_red: 0 }

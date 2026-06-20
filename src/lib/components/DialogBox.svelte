@@ -35,13 +35,13 @@
       displayText = line.text;
       isTyping = false;
     } else {
-      $campaignStore.nextDialogLine();
+      campaignStore.nextDialogLine();
     }
   }
 
   function handleSkip() {
     if (typeInterval) clearInterval(typeInterval);
-    $campaignStore.skipDialog();
+    campaignStore.skipDialog();
   }
 
   function handleKeydown(e) {

@@ -81,28 +81,28 @@
       ...level.enemyUnits
     ];
 
-    $campaignStore.deployUnits(fullArmy);
+    campaignStore.deployUnits(fullArmy);
   }
 
   function backToMap() {
-    $campaignStore.setView('chapter_map');
+    campaignStore.setView('chapter_map');
   }
 
   function backToMenu() {
-    $campaignStore.setView('menu');
+    campaignStore.setView('menu');
   }
 
   function refreshShop() {
-    $campaignStore.refreshShop();
+    campaignStore.refreshShop();
   }
 
   function recruitUnit(offerId) {
-    $campaignStore.recruitUnit(offerId);
+    campaignStore.recruitUnit(offerId);
   }
 
   function dismissUnit(uid) {
     if (confirm('确定要解散这个单位吗？将返还部分金币。')) {
-      $campaignStore.dismissUnit(uid);
+      campaignStore.dismissUnit(uid);
     }
   }
 

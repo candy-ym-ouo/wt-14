@@ -192,9 +192,82 @@ export function loadUnitPool() {
 }
 
 function createDefaultUnitPool() {
+  const defaultUnits = [
+    {
+      uid: 'pool_1',
+      type: 'scout',
+      name: '侦察兵·新兵',
+      level: 1,
+      exp: 0,
+      rarity: 'common',
+      maxHp: 8,
+      hp: 8,
+      attack: 3,
+      defense: 1,
+      moveRange: 4,
+      attackRange: 1
+    },
+    {
+      uid: 'pool_2',
+      type: 'infantry',
+      name: '步兵·新兵',
+      level: 1,
+      exp: 0,
+      rarity: 'common',
+      maxHp: 12,
+      hp: 12,
+      attack: 4,
+      defense: 3,
+      moveRange: 2,
+      attackRange: 1
+    },
+    {
+      uid: 'pool_3',
+      type: 'archer',
+      name: '弓箭手·新兵',
+      level: 1,
+      exp: 0,
+      rarity: 'common',
+      maxHp: 7,
+      hp: 7,
+      attack: 5,
+      defense: 1,
+      moveRange: 3,
+      attackRange: 3
+    },
+    {
+      uid: 'pool_4',
+      type: 'knight',
+      name: '骑士·新兵',
+      level: 1,
+      exp: 0,
+      rarity: 'uncommon',
+      maxHp: 15,
+      hp: 15,
+      attack: 6,
+      defense: 4,
+      moveRange: 3,
+      attackRange: 1
+    },
+    {
+      uid: 'pool_5',
+      type: 'mage',
+      name: '法师·新兵',
+      level: 1,
+      exp: 0,
+      rarity: 'uncommon',
+      maxHp: 6,
+      hp: 6,
+      attack: 7,
+      defense: 1,
+      moveRange: 2,
+      attackRange: 2
+    }
+  ];
+  
   return {
-    units: [],
-    nextUnitId: 1
+    units: defaultUnits,
+    nextUnitId: 6
   };
 }
 

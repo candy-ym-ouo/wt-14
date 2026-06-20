@@ -3,6 +3,18 @@ import { BOARD_CONFIG, TERRAIN_MAP } from '$lib/config/board.js';
 import { UNIT_TYPES, INITIAL_UNITS } from '$lib/config/units.js';
 import { EVENT_CARDS, EVENT_CARD_CONFIG } from '$lib/config/eventCards.js';
 import { GAME_RULES, WIN_CONDITIONS } from '$lib/config/gameRules.js';
+import {
+  generateRuinsMap,
+  generateRuinsEnemies,
+  placeEnemyUnits,
+  placePlayerUnits,
+  handleTileEffect,
+  applyTreasureEffect,
+  applyEventChoice,
+  getRuinsMoveCost,
+  getRuinsTerrainDefense
+} from '$lib/utils/ruinsLogic.js';
+import { RUINS_CONFIG } from '$lib/config/ruins.js';
 
 let unitIdCounter = 0;
 
@@ -93,7 +105,36 @@ function createInitialState(options = {}) {
     extraActions: 0,
     movementLimit: null,
     revealEnemy: false,
-    battleStats
+    battleStats,
+    ruins: options.ruins || null
+  };
+}
+
+function createRuinsInitialState(playerUnits, startFloor = 1) {
+  unitIdCounter = 0;
+  const mapData = generateRuinsMap(startFloor);
+  const enemies = generateRuinsEnemies(startFloor);
+  
+  const placedPlayerUnits = placePlayerUnits(playerUnits, mapData.terrainMap);
+  const placedEnemyUnits = placeEnemyUnits(enemies, mapData.terrainMap);
+  
+  const allUnits = [...placedPlayerUnits, ...placedEnemyUnits];
+
+  return {
+    mode: 'ruins',
+    currentFloor: startFloor,
+    maxFloors: RUINS_CONFIG.maxFloors,
+    ruinsMap: mapData,
+    currentGold: 0,
+    treasuresCollected: [],
+    eventsTriggered: [],
+    trapsTriggered: [],
+    initialPlayerCount: playerUnits.length,
+    evacuated: false,
+    atExit: false,
+    pendingEvent: null,
+    pendingTreasure: null,
+    pendingSettlement: null
   };
 }
 
@@ -399,7 +440,222 @@ function createGameStore() {
       }));
     },
     reset: () => set(createInitialState()),
-    resetCampaign: (options) => set(createInitialState(options))
+    resetCampaign: (options) => set(createInitialState(options)),
+
+    startRuinsExploration: (playerUnits, startFloor = 1) => {
+      unitIdCounter = 0;
+      const mapData = generateRuinsMap(startFloor);
+      const enemies = generateRuinsEnemies(startFloor);
+      
+      const placedPlayer = placePlayerUnits(playerUnits, mapData.terrainMap);
+      const placedEnemies = placeEnemyUnits(enemies, mapData.terrainMap);
+      
+      const allUnits = [...placedPlayer, ...placedEnemies];
+      
+      const ruinsState = {
+        mode: 'ruins',
+        currentFloor: startFloor,
+        maxFloors: RUINS_CONFIG.maxFloors,
+        ruinsMap: mapData,
+        currentGold: 0,
+        treasuresCollected: [],
+        eventsTriggered: [],
+        trapsTriggered: [],
+        initialPlayerCount: playerUnits.length,
+        evacuated: false,
+        atExit: false,
+        pendingEvent: null,
+        pendingTreasure: null,
+        pendingSettlement: null
+      };
+      
+      const gameState = createInitialState({
+        mode: 'ruins',
+        customUnits: [],
+        maxTurns: GAME_RULES.maxTurns,
+        winCondition: 'eliminate_all',
+        ruins: ruinsState
+      });
+      
+      gameState.units = allUnits;
+      gameState.ruins = ruinsState;
+
+      set(gameState);
+    },
+
+    handleRuinsTileEffect: (unitId, x, y) => update(state => {
+      if (state.mode !== 'ruins' || !state.ruins) return state;
+
+      const unit = state.units.find(u => u.id === unitId);
+      if (!unit || unit.player !== 'red') return state;
+
+      const terrainType = state.ruins.ruinsMap.terrainMap[y][x];
+      const tileData = state.ruins.ruinsMap.specialTiles.find(t => t.x === x && t.y === y);
+
+      const effectResult = handleTileEffect(terrainType, unit, state, tileData);
+      
+      let newState = { ...state };
+      let newUnits = [...state.units];
+      let newRuins = { ...state.ruins };
+      let newSpecialTiles = [...state.ruins.ruinsMap.specialTiles];
+
+      effectResult.messages.forEach(msg => {
+        newState.ruinsLog = newState.ruinsLog || [];
+        newState.ruinsLog.push(msg);
+      });
+
+      if (effectResult.stateChanges.damage) {
+        const dmg = effectResult.stateChanges.damage;
+        newUnits = newUnits.map(u =>
+          u.id === dmg.targetId ? { ...u, hp: Math.max(0, u.hp - dmg.amount) } : u
+        ).filter(u => u.hp > 0);
+      }
+
+      if (effectResult.stateChanges.trapTriggered && tileData) {
+        const idx = newSpecialTiles.findIndex(t => t.x === x && t.y === y);
+        if (idx >= 0) {
+          newSpecialTiles[idx] = { ...newSpecialTiles[idx], triggered: true };
+        }
+        newRuins.trapsTriggered = [...newRuins.trapsTriggered, { x, y, floor: state.ruins.currentFloor }];
+      }
+
+      if (effectResult.stateChanges.treasureCollected && tileData) {
+        const idx = newSpecialTiles.findIndex(t => t.x === x && t.y === y);
+        if (idx >= 0) {
+          newSpecialTiles[idx] = { ...newSpecialTiles[idx], collected: true };
+        }
+        const treasure = effectResult.stateChanges.treasure;
+        const treasureResult = applyTreasureEffect(treasure, newUnits, newRuins.currentGold);
+        newUnits = treasureResult.units;
+        newRuins.currentGold = treasureResult.gold;
+        newRuins.treasuresCollected = [...newRuins.treasuresCollected, treasure];
+        newState.ruinsLog = newState.ruinsLog || [];
+        newState.ruinsLog.push(treasureResult.message);
+      }
+
+      if (effectResult.stateChanges.eventTriggered && tileData) {
+        const idx = newSpecialTiles.findIndex(t => t.x === x && t.y === y);
+        if (idx >= 0) {
+          newSpecialTiles[idx] = { ...newSpecialTiles[idx], triggered: true };
+        }
+        newRuins.pendingEvent = effectResult.eventData;
+        newRuins.eventsTriggered = [...newRuins.eventsTriggered, { eventType: tileData.eventType, floor: state.ruins.currentFloor }];
+      }
+
+      if (effectResult.stateChanges.atExit) {
+        newRuins.atExit = true;
+      }
+
+      newRuins.ruinsMap = { ...newRuins.ruinsMap, specialTiles: newSpecialTiles };
+      newState.units = newUnits;
+      newState.ruins = newRuins;
+
+      return newState;
+    }),
+
+    resolveRuinsEvent: (choice) => update(state => {
+      if (state.mode !== 'ruins' || !state.ruins?.pendingEvent) return state;
+
+      const event = state.ruins.pendingEvent;
+      const result = applyEventChoice(event, choice, state.units, state.ruins.currentGold);
+
+      if (!result.success) {
+        return {
+          ...state,
+          ruinsLog: [...(state.ruinsLog || []), result.message]
+        };
+      }
+
+      return {
+        ...state,
+        units: result.units,
+        ruins: {
+          ...state.ruins,
+          currentGold: result.gold,
+          pendingEvent: null
+        },
+        ruinsLog: [...(state.ruinsLog || []), result.message]
+      };
+    }),
+
+    dismissRuinsEvent: () => update(state => {
+      if (state.mode !== 'ruins' || !state.ruins) return state;
+      return {
+        ...state,
+        ruins: {
+          ...state.ruins,
+          pendingEvent: null
+        }
+      };
+    }),
+
+    nextRuinsFloor: () => update(state => {
+      if (state.mode !== 'ruins' || !state.ruins) return state;
+      
+      const nextFloor = state.ruins.currentFloor + 1;
+      if (nextFloor > state.ruins.maxFloors) {
+        return state;
+      }
+
+      const mapData = generateRuinsMap(nextFloor);
+      const enemies = generateRuinsEnemies(nextFloor);
+
+      const existingPlayerUnits = state.units.filter(u => u.player === 'red');
+      const placedPlayerUnits = placePlayerUnits(existingPlayerUnits, mapData.terrainMap);
+      const placedEnemyUnits = placeEnemyUnits(enemies, mapData.terrainMap);
+
+      const allUnits = [...placedPlayerUnits, ...placedEnemyUnits];
+
+      return {
+        ...state,
+        units: allUnits,
+        turn: 1,
+        currentPlayer: GAME_RULES.startingPlayer,
+        actionsRemaining: GAME_RULES.actionsPerTurn,
+        selectedUnitId: null,
+        validMoveTiles: [],
+        validAttackTiles: [],
+        ruins: {
+          ...state.ruins,
+          currentFloor: nextFloor,
+          ruinsMap: mapData,
+          atExit: false
+        },
+        ruinsLog: [...(state.ruinsLog || []), `=== 进入第 ${nextFloor} 层 ===`]
+      };
+    }),
+
+    evacuateRuins: () => update(state => {
+      if (state.mode !== 'ruins' || !state.ruins) return state;
+
+      return {
+        ...state,
+        gameOver: true,
+        winner: 'red',
+        ruins: {
+          ...state.ruins,
+          evacuated: true
+        }
+      };
+    }),
+
+    getRuinsTerrainDefense: (x, y) => {
+      const state = get(gameStore);
+      if (state.mode === 'ruins' && state.ruins) {
+        const terrainId = state.ruins.ruinsMap.terrainMap[y][x];
+        return getRuinsTerrainDefense(terrainId);
+      }
+      return 0;
+    },
+
+    getRuinsMoveCost: (x, y) => {
+      const state = get(gameStore);
+      if (state.mode === 'ruins' && state.ruins) {
+        const terrainId = state.ruins.ruinsMap.terrainMap[y][x];
+        return getRuinsMoveCost(terrainId);
+      }
+      return 1;
+    }
   };
 }
 

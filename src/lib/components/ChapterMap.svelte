@@ -8,19 +8,19 @@
   $: currentChapter = CHAPTERS.find(c => c.id === $campaignStore.selectedChapterId);
 
   function selectChapter(chapterId) {
-    $campaignStore.selectChapter(chapterId);
+    campaignStore.selectChapter(chapterId);
   }
 
   function selectLevel(levelId) {
-    $campaignStore.selectLevel(levelId);
+    campaignStore.selectLevel(levelId);
   }
 
   function backToMenu() {
-    $campaignStore.setView('menu');
+    campaignStore.setView('menu');
   }
 
   function goToUnits() {
-    $campaignStore.setView('units');
+    campaignStore.setView('units');
   }
 </script>
 

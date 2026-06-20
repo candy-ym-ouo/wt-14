@@ -7,7 +7,7 @@
   $: data = rewards.data;
 
   function handleContinue() {
-    $campaignStore.dismissReward();
+    campaignStore.dismissReward();
   }
 </script>
 

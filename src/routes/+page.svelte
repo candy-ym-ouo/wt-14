@@ -12,22 +12,40 @@
   import DialogBox from '$lib/components/DialogBox.svelte';
   import RewardModal from '$lib/components/RewardModal.svelte';
   import UnitPanel from '$lib/components/UnitPanel.svelte';
+  import RuinsMap from '$lib/components/RuinsMap.svelte';
+  import RuinsEvent from '$lib/components/RuinsEvent.svelte';
+  import RuinsReward from '$lib/components/RuinsReward.svelte';
+  import RuinsSettlement from '$lib/components/RuinsSettlement.svelte';
   import { gameStore } from '$lib/stores/gameStore.js';
   import { campaignStore, currentLevel } from '$lib/stores/campaignStore.js';
-  import { checkWinConditions as _checkWinConditions, updateBaseCaptureProgress } from '$lib/utils/gameLogic.js';
+  import { checkWinConditions as _checkWinConditions, updateBaseCaptureProgress, checkEliminationOnly } from '$lib/utils/gameLogic.js';
+  import { calculateRuinsSettlement } from '$lib/utils/ruinsLogic.js';
   import { saveGameRecord, getStats } from '$lib/utils/storage.js';
   import { GAME_RULES } from '$lib/config/gameRules.js';
   import { CHAPTERS } from '$lib/config/chapters.js';
+  import { UNIT_TYPES, UNIT_CLASSES } from '$lib/config/units.js';
+  import { RUINS_CONFIG, RUINS_TERRAIN } from '$lib/config/ruins.js';
 
   let combatLogs = [];
+  let ruinsLogs = [];
   let showRecords = false;
   let firstInit = true;
   let menuStats = { totalGames: 0, redWins: 0, blueWins: 0, draws: 0, avgTurns: 0 };
+  let ruinsBoardRef = null;
+  let showTreasureModal = false;
+  let currentTreasure = null;
 
   $: campaignView = $campaignStore.view;
   $: level = $currentLevel;
   $: game = $gameStore;
   $: mode = game.mode;
+  $: ruinsState = game.ruins;
+  $: pendingEvent = ruinsState?.pendingEvent;
+  $: atExit = ruinsState?.atExit;
+  $: currentFloor = ruinsState?.currentFloor;
+  $: currentGold = ruinsState?.currentGold || 0;
+  $: treasuresCollected = ruinsState?.treasuresCollected || [];
+  $: ruinsSettlement = $campaignStore.ruins?.settlement;
 
   function addLog(msg) {
     combatLogs = [...combatLogs, msg];
@@ -43,7 +61,126 @@
   }
 
   function startCampaign() {
-    $campaignStore.setView('chapter_map');
+    campaignStore.setView('chapter_map');
+  }
+
+  function startRuinsMode() {
+    campaignStore.startRuinsMode();
+  }
+
+  function addRuinsLog(msg) {
+    ruinsLogs = [...ruinsLogs, msg];
+    if (ruinsLogs.length > 100) {
+      ruinsLogs = ruinsLogs.slice(-100);
+    }
+  }
+
+  function handleRuinsTileEffect(unitId, x, y) {
+    gameStore.handleRuinsTileEffect(unitId, x, y);
+    
+    const game = get(gameStore);
+    const treasures = game.ruins?.treasuresCollected || [];
+    if (treasures.length > treasuresCollected.length) {
+      const newTreasure = treasures[treasures.length - 1];
+      currentTreasure = newTreasure;
+      showTreasureModal = true;
+    }
+
+    const logs = game.ruinsLog || [];
+    if (logs.length > ruinsLogs.length) {
+      logs.slice(ruinsLogs.length).forEach(msg => addRuinsLog(msg));
+    }
+  }
+
+  function handleRuinsEventResolve(choice) {
+    if (choice) {
+      addRuinsLog(`选择了: ${choice.text}`);
+    }
+  }
+
+  function handleTreasureClose() {
+    showTreasureModal = false;
+    currentTreasure = null;
+  }
+
+  function handleRuinsEndTurn() {
+    const game = get(gameStore);
+    if (game.gameOver) return;
+
+    const endingPlayer = game.currentPlayer;
+    addRuinsLog(`--- ${endingPlayer === 'red' ? '我方' : '敌方'} 回合结束 ---`);
+
+    const winner = checkEliminationOnly(game.units);
+    if (winner) {
+      handleRuinsBattleEnd(winner, 'elimination');
+      return;
+    }
+
+    const redUnits = game.units.filter(u => u.player === 'red');
+    if (redUnits.length === 0) {
+      handleRuinsBattleEnd('blue', 'elimination');
+      return;
+    }
+
+    gameStore.endTurn();
+
+    setTimeout(() => {
+      const newGame = get(gameStore);
+      addRuinsLog(`=== 第 ${newGame.turn} 回合 - ${newGame.currentPlayer === 'red' ? '我方' : '敌方'} 行动 ===`);
+    }, 100);
+  }
+
+  function handleRuinsBattleEnd(winner, endReason) {
+    const game = get(gameStore);
+    if (game.gameOver && !game._battleEndHandled) {
+      gameStore.setWinner(winner);
+      game._battleEndHandled = true;
+    }
+
+    const battleStats = gameStore.getBattleStats();
+    const settlement = calculateRuinsSettlement(game.ruins, game.units, battleStats);
+    
+    campaignStore.completeRuinsExploration(settlement);
+  }
+
+  function handleNextFloor() {
+    gameStore.nextRuinsFloor();
+    addRuinsLog(`=== 进入第 ${ruinsState.currentFloor + 1} 层 ===`);
+    
+    setTimeout(() => {
+      if (ruinsBoardRef?.refreshBoard) {
+        ruinsBoardRef.refreshBoard();
+      }
+    }, 100);
+  }
+
+  function handleEvacuate() {
+    if (confirm('确定要撤离吗？将结算本次探索奖励。')) {
+      gameStore.evacuateRuins();
+      handleRuinsBattleEnd('red', 'evacuation');
+    }
+  }
+
+  function initRuinsGame() {
+    const selectedUnits = $campaignStore.ruins.selectedUnits;
+    const units = $campaignStore.unitPool.units.filter(u => selectedUnits.includes(u.uid));
+    const startFloor = $campaignStore.ruins.startFloor;
+    
+    campaignStore.startRuinsExploration();
+    gameStore.startRuinsExploration(units, startFloor);
+    
+    ruinsLogs = [];
+    addRuinsLog(`【遗迹探索】开始！第 ${startFloor} 层`);
+    addRuinsLog('目标：消灭敌人，收集宝物，到达撤离点');
+    addRuinsLog('🚪 入口  📦 宝箱  ❓ 事件  ⚠️ 陷阱  🚀 撤离点');
+  }
+
+  function toggleRuinsUnit(unitUid) {
+    campaignStore.toggleRuinsUnit(unitUid);
+  }
+
+  function setRuinsFloor(floor) {
+    campaignStore.setRuinsStartFloor(floor);
   }
 
   function handleEndTurn() {
@@ -138,8 +275,8 @@
       const battleStats = gameStore.getBattleStats();
       const synergies = $campaignStore.battle.activeSynergies || [];
       const classCounts = $campaignStore.battle.classCounts || {};
-      $campaignStore.recordBattleData(battleStats);
-      $campaignStore.completeBattle({
+      campaignStore.recordBattleData(battleStats);
+      campaignStore.completeBattle({
         winner,
         turns: game.turn,
         redUnits,
@@ -159,7 +296,7 @@
 
   function handleReset() {
     if (mode === 'campaign') {
-      $campaignStore.setView('chapter_map');
+      campaignStore.setView('chapter_map');
     } else {
       startSkirmish();
     }
@@ -197,6 +334,12 @@
   $: if (campaignView === 'battle' && firstInit === false) {
     if (game.mode !== 'campaign' || !game.levelId) {
       initCampaignGame();
+    }
+  }
+
+  $: if (campaignView === 'ruins_battle' && firstInit === false) {
+    if (game.mode !== 'ruins' || !game.ruins) {
+      initRuinsGame();
     }
   }
 
@@ -244,11 +387,19 @@
           </span>
         </button>
 
-        <button class="menu-btn" on:click={() => $campaignStore.setView('units')}>
+        <button class="menu-btn" on:click={() => campaignStore.setView('units')}>
           <span class="btn-icon">🎖️</span>
           <span class="btn-text">
             <span class="btn-title">部队管理</span>
             <span class="btn-subtitle">查看单位 · 招募新兵</span>
+          </span>
+        </button>
+
+        <button class="menu-btn" on:click={startRuinsMode}>
+          <span class="btn-icon">🏛️</span>
+          <span class="btn-text">
+            <span class="btn-title">遗迹探索</span>
+            <span class="btn-subtitle">随机地图 · 事件分支 · 宝物掉落</span>
           </span>
         </button>
 
@@ -283,10 +434,10 @@
       </div>
 
       <div class="menu-footer">
-        <button class="ghost-btn" on:click={() => $campaignStore.save()}>💾 保存进度</button>
+        <button class="ghost-btn" on:click={() => campaignStore.save()}>💾 保存进度</button>
         <button class="ghost-btn" on:click={() => {
           if (confirm('确定要重置所有战役进度吗？此操作不可恢复！')) {
-            $campaignStore.resetProgress();
+            campaignStore.resetProgress();
           }
         }}>🔄 重置进度</button>
       </div>
@@ -355,11 +506,203 @@
       </aside>
     </main>
   </div>
+{:else if campaignView === 'ruins_deploy'}
+  <div class="ruins-deploy">
+    <div class="ruins-deploy-header">
+      <button class="back-btn" on:click={() => campaignStore.exitRuinsMode()}>← 返回</button>
+      <h1>🏛️ 遗迹探索 - 部队选择</h1>
+      <div></div>
+    </div>
+
+    <div class="ruins-deploy-content">
+      <div class="deploy-section">
+        <h2>选择出战单位 ({ $campaignStore.ruins.selectedUnits.length}/{RUINS_CONFIG.maxUnits})</h2>
+        <p class="deploy-hint">至少选择 {RUINS_CONFIG.minUnits} 个单位，最多 {RUINS_CONFIG.maxUnits} 个单位</p>
+        
+        <div class="unit-select-grid">
+          {#each $campaignStore.unitPool.units as unit}
+            {#if $campaignStore.progress.unlockedUnits.includes(unit.type)}
+              <div 
+                class="unit-select-card"
+                class:selected={$campaignStore.ruins.selectedUnits.includes(unit.uid)}
+                on:click={() => toggleRuinsUnit(unit.uid)}
+              >
+                <span class="unit-icon">{UNIT_TYPES[unit.type]?.icon || '?'}</span>
+                <div class="unit-info">
+                  <span class="unit-name">{unit.name}</span>
+                  <div class="unit-stats">
+                    <span>Lv {unit.level}</span>
+                    <span>❤️ {unit.maxHp}</span>
+                    <span>⚔️ {unit.attack}</span>
+                    <span>🛡️ {unit.defense}</span>
+                  </div>
+                </div>
+                {#if $campaignStore.ruins.selectedUnits.includes(unit.uid)}
+                  <span class="selected-badge">✓</span>
+                {/if}
+              </div>
+            {/if}
+          {/each}
+        </div>
+      </div>
+
+      <div class="deploy-sidebar">
+        <div class="floor-select">
+          <h3>选择起始楼层</h3>
+          <div class="floor-buttons">
+            {#each [1, 2, 3, 4, 5] as floor}
+              <button 
+                class="floor-btn"
+                class:active={$campaignStore.ruins.startFloor === floor}
+                on:click={() => setRuinsFloor(floor)}
+              >
+                {floor}F
+              </button>
+            {/each}
+          </div>
+          <p class="floor-desc">更高楼层敌人更强，奖励更丰厚</p>
+        </div>
+
+        <div class="ruins-legend">
+          <h3>地图图例</h3>
+          <div class="legend-items">
+            <div class="legend-item">
+              <span class="legend-icon">🚪</span>
+              <span>入口</span>
+            </div>
+            <div class="legend-item">
+              <span class="legend-icon">🚀</span>
+              <span>撤离点</span>
+            </div>
+            <div class="legend-item">
+              <span class="legend-icon">📦</span>
+              <span>宝箱</span>
+            </div>
+            <div class="legend-item">
+              <span class="legend-icon">❓</span>
+              <span>事件</span>
+            </div>
+            <div class="legend-item">
+              <span class="legend-icon">⚠️</span>
+              <span>陷阱</span>
+            </div>
+          </div>
+        </div>
+
+        <button 
+          class="start-ruins-btn"
+          class:disabled={$campaignStore.ruins.selectedUnits.length < RUINS_CONFIG.minUnits}
+          on:click={initRuinsGame}
+        >
+          开始探索
+        </button>
+      </div>
+    </div>
+  </div>
+
+{:else if campaignView === 'ruins_battle'}
+  <div class="game-container">
+    <header class="game-header">
+      <div class="ruins-header-info">
+        <button class="back-btn" on:click={handleEvacuate}>← 撤离</button>
+        <div class="level-info">
+          <h1>🏛️ 遗迹探索 - 第 {currentFloor} 层</h1>
+          <p class="level-desc">{ruinsState?.ruinsMap?.templateName || '未知遗迹'}</p>
+        </div>
+        <div class="ruins-stats">
+          <span>💰 {currentGold}</span>
+          <span>📦 {treasuresCollected.length}</span>
+          <span>回合: {game.turn}</span>
+        </div>
+      </div>
+    </header>
+
+    <main class="game-main">
+      <aside class="left-panel">
+        <div class="ruins-controls">
+          <h3>遗迹控制</h3>
+          <button 
+            class="control-btn end-turn" 
+            on:click={handleRuinsEndTurn}
+            disabled={game.gameOver || game.currentPlayer !== 'red'}
+          >
+            结束回合
+          </button>
+          {#if atExit}
+            <button 
+              class="control-btn next-floor"
+              on:click={handleNextFloor}
+              disabled={currentFloor >= RUINS_CONFIG.maxFloors}
+            >
+              {currentFloor >= RUINS_CONFIG.maxFloors ? '已到达顶层' : '前往下一层 →'}
+            </button>
+          {/if}
+          <button class="control-btn evacuate" on:click={handleEvacuate}>
+            🚀 撤离遗迹
+          </button>
+        </div>
+        <UnitLegend />
+      </aside>
+
+      <section class="center-panel">
+        <div class="board-wrapper">
+          <RuinsMap 
+            bind:this={ruinsBoardRef}
+            onCombatLog={addRuinsLog} 
+            onBattleEnd={handleRuinsBattleEnd}
+            onTileEffect={handleRuinsTileEffect}
+          />
+        </div>
+        <CombatLog logs={ruinsLogs} title="探索日志" />
+      </section>
+
+      <aside class="right-panel">
+        <div class="ruins-status">
+          <h3>探索进度</h3>
+          <div class="progress-bar">
+            <div class="progress-fill" style="width: {(currentFloor / RUINS_CONFIG.maxFloors) * 100}%"></div>
+          </div>
+          <p class="progress-text">{currentFloor} / {RUINS_CONFIG.maxFloors} 层</p>
+          
+          <div class="collected-treasures">
+            <h4>已收集宝物</h4>
+            {#if treasuresCollected.length > 0}
+              <div class="treasure-list">
+                {#each treasuresCollected as treasure}
+                  <div class="treasure-item" title={treasure.description}>
+                    <span>{treasure.icon}</span>
+                    <span class="treasure-name">{treasure.name}</span>
+                  </div>
+                {/each}
+              </div>
+            {:else}
+              <p class="empty-text">还没有收集到宝物</p>
+            {/if}
+          </div>
+        </div>
+        <div class="help-panel">
+          <h3>探索指南</h3>
+          <ul>
+            <li>🚪 入口是你的起始位置</li>
+            <li>📦 移动到宝箱上获得宝物</li>
+            <li>❓ 事件点会触发随机事件</li>
+            <li>⚠️ 小心隐藏的陷阱</li>
+            <li>🚀 到达撤离点可选择继续或撤离</li>
+            <li>消灭所有敌人也可以继续探索</li>
+            <li>单位死亡将永久失去</li>
+          </ul>
+        </div>
+      </aside>
+    </main>
+  </div>
 {/if}
 
 <DialogBox />
 <RewardModal />
 <GameRecords show={showRecords} onClose={handleCloseRecords} />
+<RuinsEvent event={pendingEvent} onResolve={handleRuinsEventResolve} />
+<RuinsReward treasure={showTreasureModal ? currentTreasure : null} onClose={handleTreasureClose} />
+<RuinsSettlement settlement={ruinsSettlement} onClose={() => { campaignStore.exitRuinsMode(); }} />
 
 {#if $campaignStore.notification}
   <div class="notification {$campaignStore.notification.type}">
@@ -738,6 +1081,393 @@
     }
   }
 
+  .ruins-header-info {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 20px;
+    padding: 12px 20px;
+    background: rgba(30, 20, 10, 0.8);
+    border-radius: 14px;
+    border: 1px solid rgba(212, 175, 55, 0.25);
+  }
+
+  .ruins-header-info h1 {
+    margin: 0;
+    font-size: 22px;
+    background: linear-gradient(135deg, #d4af37, #b8860b);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  .ruins-stats {
+    display: flex;
+    gap: 16px;
+    padding: 8px 16px;
+    background: rgba(50, 40, 20, 0.6);
+    border-radius: 8px;
+    font-size: 14px;
+    font-weight: 600;
+    color: #ffd700;
+  }
+
+  .ruins-controls {
+    background: linear-gradient(135deg, #1a1a2e, #16213e);
+    border-radius: 8px;
+    padding: 14px;
+    border: 1px solid #333;
+  }
+
+  .ruins-controls h3 {
+    margin: 0 0 10px 0;
+    color: #e8d5b7;
+    font-size: 14px;
+  }
+
+  .control-btn {
+    width: 100%;
+    padding: 12px 16px;
+    margin-bottom: 8px;
+    border: none;
+    border-radius: 8px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+
+  .control-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .control-btn.end-turn {
+    background: linear-gradient(135deg, #3498db, #2980b9);
+    color: white;
+  }
+
+  .control-btn.end-turn:hover:not(:disabled) {
+    background: linear-gradient(135deg, #5dade2, #3498db);
+    transform: translateY(-2px);
+  }
+
+  .control-btn.next-floor {
+    background: linear-gradient(135deg, #2ecc71, #27ae60);
+    color: white;
+  }
+
+  .control-btn.next-floor:hover:not(:disabled) {
+    background: linear-gradient(135deg, #58d68d, #2ecc71);
+    transform: translateY(-2px);
+  }
+
+  .control-btn.evacuate {
+    background: linear-gradient(135deg, #e74c3c, #c0392b);
+    color: white;
+  }
+
+  .control-btn.evacuate:hover:not(:disabled) {
+    background: linear-gradient(135deg, #ec7063, #e74c3c);
+    transform: translateY(-2px);
+  }
+
+  .ruins-status {
+    background: linear-gradient(135deg, #1a1a2e, #16213e);
+    border-radius: 8px;
+    padding: 14px;
+    border: 1px solid #333;
+  }
+
+  .ruins-status h3 {
+    margin: 0 0 10px 0;
+    color: #e8d5b7;
+    font-size: 14px;
+  }
+
+  .ruins-status h4 {
+    margin: 12px 0 8px 0;
+    color: #d4af37;
+    font-size: 13px;
+  }
+
+  .progress-bar {
+    height: 8px;
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: 4px;
+    overflow: hidden;
+    margin-bottom: 8px;
+  }
+
+  .progress-fill {
+    height: 100%;
+    background: linear-gradient(90deg, #d4af37, #ffd700);
+    border-radius: 4px;
+    transition: width 0.3s ease;
+  }
+
+  .progress-text {
+    text-align: center;
+    color: #888;
+    font-size: 12px;
+    margin: 0 0 8px 0;
+  }
+
+  .collected-treasures {
+    margin-top: 12px;
+  }
+
+  .treasure-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .treasure-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    background: rgba(212, 175, 55, 0.1);
+    border-radius: 6px;
+    font-size: 12px;
+    color: #d4af37;
+  }
+
+  .treasure-name {
+    flex: 1;
+  }
+
+  .empty-text {
+    color: #666;
+    font-size: 12px;
+    text-align: center;
+    padding: 8px;
+  }
+
+  .ruins-deploy {
+    min-height: 100vh;
+    padding: 20px;
+  }
+
+  .ruins-deploy-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    max-width: 1200px;
+    margin: 0 auto 24px auto;
+    padding: 16px 24px;
+    background: rgba(30, 20, 10, 0.8);
+    border-radius: 14px;
+    border: 1px solid rgba(212, 175, 55, 0.25);
+  }
+
+  .ruins-deploy-header h1 {
+    margin: 0;
+    font-size: 28px;
+    background: linear-gradient(135deg, #d4af37, #b8860b);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  .ruins-deploy-content {
+    display: flex;
+    gap: 24px;
+    max-width: 1200px;
+    margin: 0 auto;
+    align-items: flex-start;
+  }
+
+  .deploy-section {
+    flex: 1;
+    background: rgba(20, 20, 30, 0.6);
+    border-radius: 14px;
+    padding: 24px;
+    border: 1px solid rgba(100, 100, 150, 0.2);
+  }
+
+  .deploy-section h2 {
+    margin: 0 0 8px 0;
+    color: #e8d5b7;
+    font-size: 20px;
+  }
+
+  .deploy-hint {
+    color: #888;
+    font-size: 13px;
+    margin: 0 0 20px 0;
+  }
+
+  .unit-select-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 12px;
+  }
+
+  .unit-select-card {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 14px;
+    background: rgba(40, 40, 60, 0.6);
+    border: 2px solid rgba(100, 100, 150, 0.3);
+    border-radius: 10px;
+    cursor: pointer;
+    transition: all 0.2s;
+    position: relative;
+  }
+
+  .unit-select-card:hover {
+    border-color: rgba(212, 175, 55, 0.5);
+    transform: translateY(-2px);
+  }
+
+  .unit-select-card.selected {
+    border-color: #d4af37;
+    background: rgba(212, 175, 55, 0.15);
+  }
+
+  .unit-select-card .unit-icon {
+    font-size: 36px;
+    flex-shrink: 0;
+  }
+
+  .unit-select-card .unit-info {
+    flex: 1;
+  }
+
+  .unit-select-card .unit-name {
+    display: block;
+    font-weight: 600;
+    color: #fff;
+    font-size: 14px;
+    margin-bottom: 4px;
+  }
+
+  .unit-select-card .unit-stats {
+    display: flex;
+    gap: 10px;
+    font-size: 12px;
+    color: #aaa;
+  }
+
+  .selected-badge {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    width: 24px;
+    height: 24px;
+    background: #d4af37;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #1a1410;
+    font-weight: 700;
+    font-size: 14px;
+  }
+
+  .deploy-sidebar {
+    width: 320px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+
+  .floor-select, .ruins-legend {
+    background: rgba(20, 20, 30, 0.6);
+    border-radius: 14px;
+    padding: 20px;
+    border: 1px solid rgba(100, 100, 150, 0.2);
+  }
+
+  .floor-select h3, .ruins-legend h3 {
+    margin: 0 0 12px 0;
+    color: #e8d5b7;
+    font-size: 16px;
+  }
+
+  .floor-buttons {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 8px;
+  }
+
+  .floor-btn {
+    flex: 1;
+    padding: 12px;
+    background: rgba(40, 40, 60, 0.6);
+    border: 2px solid rgba(100, 100, 150, 0.3);
+    border-radius: 8px;
+    color: #aaa;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+
+  .floor-btn:hover {
+    border-color: rgba(212, 175, 55, 0.5);
+    color: #d4af37;
+  }
+
+  .floor-btn.active {
+    border-color: #d4af37;
+    background: rgba(212, 175, 55, 0.2);
+    color: #ffd700;
+  }
+
+  .floor-desc {
+    color: #888;
+    font-size: 12px;
+    margin: 0;
+    text-align: center;
+  }
+
+  .legend-items {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 13px;
+    color: #c0b0a0;
+  }
+
+  .legend-icon {
+    font-size: 18px;
+    width: 24px;
+    text-align: center;
+  }
+
+  .start-ruins-btn {
+    width: 100%;
+    padding: 16px;
+    background: linear-gradient(135deg, #d4af37, #b8860b);
+    border: none;
+    border-radius: 12px;
+    color: #1a1410;
+    font-size: 18px;
+    font-weight: 700;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+
+  .start-ruins-btn:hover:not(.disabled) {
+    transform: translateY(-2px);
+    box-shadow: 0 8px 20px rgba(212, 175, 55, 0.4);
+  }
+
+  .start-ruins-btn.disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
   @media (max-width: 1200px) {
     .game-main {
       flex-direction: column;
@@ -755,9 +1485,15 @@
       flex: 1;
       min-width: 300px;
     }
-    .campaign-header-info {
+    .campaign-header-info, .ruins-header-info {
       flex-direction: column;
       text-align: center;
+    }
+    .ruins-deploy-content {
+      flex-direction: column;
+    }
+    .deploy-sidebar {
+      width: 100%;
     }
   }
 </style>

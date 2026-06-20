@@ -8,8 +8,8 @@ import {
 import { RECRUIT_RULES } from '$lib/config/gameRules.js';
 import { calculateClassSynergy } from '$lib/utils/gameLogic.js';
 import {
-  loadCampaignProgress, saveCampaignProgress,
-  loadUnitPool, saveUnitPool, addUnitToPool, updateUnitInPool,
+  loadCampaignProgress, saveCampaignProgress, clearCampaignProgress,
+  loadUnitPool, saveUnitPool, addUnitToPool, updateUnitInPool, clearUnitPool,
   isLevelUnlocked, unlockAchievement, saveGameRecord, loadSettings
 } from '$lib/utils/storage.js';
 
@@ -79,6 +79,12 @@ function createInitialCampaignState() {
     shop: {
       offers: generateShopOffer(progress.unlockedUnits),
       refreshedThisSession: 0
+    },
+    ruins: {
+      active: false,
+      selectedUnits: [],
+      startFloor: 1,
+      settlement: null
     },
     progress,
     unitPool,
@@ -703,6 +709,8 @@ function createCampaignStore() {
     })),
 
     resetProgress: () => {
+      clearUnitPool();
+      clearCampaignProgress();
       set(createInitialCampaignState());
       showNotification('战役进度已重置', 'info');
     },
@@ -718,6 +726,179 @@ function createCampaignStore() {
       set(createInitialCampaignState());
       showNotification('读档成功', 'success');
     },
+
+    startRuinsMode: () => update(state => {
+      const availableUnits = state.unitPool.units.filter(u => 
+        state.progress.unlockedUnits.includes(u.type)
+      );
+      const defaultSelected = availableUnits.slice(0, 3).map(u => u.uid);
+      
+      return {
+        ...state,
+        view: 'ruins_deploy',
+        ruins: {
+          ...state.ruins,
+          active: true,
+          selectedUnits: defaultSelected,
+          startFloor: 1,
+          settlement: null
+        }
+      };
+    }),
+
+    toggleRuinsUnit: (unitUid) => update(state => {
+      const selected = [...state.ruins.selectedUnits];
+      const idx = selected.indexOf(unitUid);
+      
+      if (idx >= 0) {
+        selected.splice(idx, 1);
+      } else {
+        if (selected.length >= 6) {
+          showNotification('最多只能选择 6 个单位', 'warning');
+          return state;
+        }
+        selected.push(unitUid);
+      }
+
+      return {
+        ...state,
+        ruins: {
+          ...state.ruins,
+          selectedUnits: selected
+        }
+      };
+    }),
+
+    setRuinsStartFloor: (floor) => update(state => {
+      return {
+        ...state,
+        ruins: {
+          ...state.ruins,
+          startFloor: Math.max(1, Math.min(5, floor))
+        }
+      };
+    }),
+
+    startRuinsExploration: () => update(state => {
+      if (state.ruins.selectedUnits.length < 3) {
+        showNotification('至少需要选择 3 个单位', 'warning');
+        return state;
+      }
+
+      const selectedUnits = state.unitPool.units.filter(u => 
+        state.ruins.selectedUnits.includes(u.uid)
+      );
+
+      return {
+        ...state,
+        view: 'ruins_battle',
+        battle: {
+          ...state.battle,
+          active: true,
+          deployedUnits: selectedUnits,
+          battleStartUnits: JSON.parse(JSON.stringify(selectedUnits))
+        }
+      };
+    }),
+
+    completeRuinsExploration: (result) => update(state => {
+      const newProgress = { ...state.progress };
+      newProgress.ruinsRuns = (newProgress.ruinsRuns || 0) + 1;
+      newProgress.gold += result.gold.total;
+      newProgress.totalExp += result.exp;
+      newProgress.ruinsBestFloor = Math.max(newProgress.ruinsBestFloor || 0, result.floorsCleared);
+
+      const expByUnit = {};
+      result.units.forEach(unit => {
+        if (unit.poolUid) {
+          expByUnit[unit.poolUid] = Math.floor(result.exp / result.units.length);
+        }
+      });
+
+      const newUnitPool = { ...state.unitPool };
+      const leveledUpUnits = [];
+
+      newUnitPool.units = newUnitPool.units.map(poolUnit => {
+        if (!expByUnit[poolUnit.uid]) return poolUnit;
+
+        const expGain = expByUnit[poolUnit.uid];
+        let currentExp = (poolUnit.exp || 0) + expGain;
+        let level = poolUnit.level || 1;
+        let levelsGained = 0;
+
+        while (level < MAX_LEVEL && currentExp >= getExpRequired(level)) {
+          currentExp -= getExpRequired(level);
+          level += 1;
+          levelsGained += 1;
+        }
+
+        const newStats = calculateStatGrowth(poolUnit.type, level);
+        const leveled = levelsGained > 0;
+
+        if (leveled) {
+          leveledUpUnits.push({
+            ...poolUnit,
+            level,
+            levelsGained,
+            oldStats: {
+              hp: poolUnit.maxHp,
+              attack: poolUnit.attack,
+              defense: poolUnit.defense
+            },
+            newStats
+          });
+        }
+
+        return {
+          ...poolUnit,
+          level,
+          exp: currentExp,
+          maxHp: newStats.hp,
+          attack: newStats.attack,
+          defense: newStats.defense,
+          moveRange: newStats.moveRange,
+          attackRange: newStats.attackRange
+        };
+      });
+
+      const newState = {
+        ...state,
+        progress: newProgress,
+        unitPool: newUnitPool,
+        view: 'ruins_settlement',
+        ruins: {
+          ...state.ruins,
+          active: false,
+          settlement: {
+            ...result,
+            leveledUp: leveledUpUnits
+          }
+        },
+        battle: { ...state.battle, active: false }
+      };
+
+      autoSave(newState);
+      if (result.success) {
+        showNotification(`遗迹探索成功！获得 ${result.gold.total} 金币`, 'success');
+      } else {
+        showNotification(`遗迹探索结束，获得 ${result.gold.total} 金币`, 'info');
+      }
+
+      return newState;
+    }),
+
+    exitRuinsMode: () => update(state => {
+      return {
+        ...state,
+        view: 'menu',
+        ruins: {
+          active: false,
+          selectedUnits: [],
+          startFloor: 1,
+          settlement: null
+        }
+      };
+    }),
 
     _autoSave: autoSave,
     _showNotification: showNotification
